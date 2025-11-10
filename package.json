@@ -1,0 +1,32 @@
+{
+  "name": "node-red-contrib-aes67-router",
+  "version": "1.0.0",
+  "description": "AES67 audio stream discovery and routing for Node-RED",
+  "keywords": [
+    "node-red",
+    "aes67",
+    "audio",
+    "streaming",
+    "sap",
+    "sdp",
+    "rtp"
+  ],
+  "node-red": {
+    "version": ">=2.0.0",
+    "nodes": {
+      "aes67-router": "aes67-router.js"
+    }
+  },
+  "dependencies": {
+    "sdp-transform": "^2.14.1"
+  },
+  "author": "DHPKE",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DHPKE/node-red-contrib-aes67-router.git"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
