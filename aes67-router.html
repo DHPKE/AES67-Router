@@ -1,0 +1,241 @@
+<script type="text/javascript">
+    RED.nodes.registerType('aes67-router', {
+        category: 'network',
+        color: '#4B7BE5',
+        defaults: {
+            name: { value: "" },
+            autoDiscover: { value: true }
+        },
+        inputs: 1,
+        outputs: 3,
+        outputLabels: ["discovery events", "audio data", "status"],
+        icon: "bridge.svg",
+        label: function() {
+            return this.name || "AES67 Router";
+        },
+        paletteLabel: "AES67 Router",
+        
+        oneditprepare: function() {
+            var node = this;
+            
+            // Load discovered streams
+            function loadStreams() {
+                $('#stream-list-content').html('<div class="loading">Loading streams...</div>');
+                
+                $.getJSON('aes67/streams', function(streams) {
+                    if (streams.length === 0) {
+                        $('#stream-list-content').html('<div class="no-streams">No AES67 streams discovered yet</div>');
+                        return;
+                    }
+                    
+                    var html = '<table class="stream-table">';
+                    html += '<thead><tr><th>Name</th><th>Source</th><th>Channels</th><th>Format</th><th>Action</th></tr></thead>';
+                    html += '<tbody>';
+                    
+                    streams.forEach(function(stream) {
+                        var streamKey = stream.sourceIP + ':' + stream.port;
+                        html += '<tr>';
+                        html += '<td class="stream-name">' + stream.name + '</td>';
+                        html += '<td class="stream-source">' + stream.sourceIP + ':' + stream.port + '</td>';
+                        html += '<td class="stream-channels">' + stream.channels + 'ch</td>';
+                        html += '<td class="stream-format">' + stream.encoding + '@' + stream.sampleRate + 'Hz</td>';
+                        html += '<td><button class="red-ui-button red-ui-button-small subscribe-btn" data-key="' + streamKey + '">Subscribe</button></td>';
+                        html += '</tr>';
+                    });
+                    
+                    html += '</tbody></table>';
+                    $('#stream-list-content').html(html);
+                });
+            }
+            
+            // Refresh button
+            $('#refresh-streams-btn').click(function() {
+                loadStreams();
+            });
+            
+            // Subscribe button handler
+            $(document).on('click', '.subscribe-btn', function() {
+                var streamKey = $(this).data('key');
+                var localPort = prompt('Enter local port for RTP reception (leave empty for auto):', '');
+                
+                $.ajax({
+                    url: 'aes67/subscribe',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        nodeId: node.id,
+                        streamKey: streamKey,
+                        localPort: localPort ? parseInt(localPort) : null
+                    }),
+                    success: function(result) {
+                        if (result.success) {
+                            RED.notify(result.message, "success");
+                        } else {
+                            RED.notify(result.error, "error");
+                        }
+                    },
+                    error: function() {
+                        RED.notify("Failed to create subscription", "error");
+                    }
+                });
+            });
+            
+            // Initial load
+            loadStreams();
+            
+            // Auto-refresh
+            var refreshInterval = setInterval(loadStreams, 10000);
+            
+            // Cleanup on close
+            node.oneditcancel = function() {
+                clearInterval(refreshInterval);
+            };
+            
+            node.oneditsave = function() {
+                clearInterval(refreshInterval);
+            };
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="aes67-router">
+    <style>
+        .aes67-section { 
+            border: 1px solid #4B7BE5; 
+            padding: 12px; 
+            margin: 10px 0; 
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+            font-size: 14px;
+        }
+        .stream-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .stream-table th {
+            background: #4B7BE5;
+            color: white;
+            padding: 6px;
+            text-align: left;
+        }
+        .stream-table td {
+            border: 1px solid #ddd;
+            padding: 6px;
+        }
+        .stream-table tr:hover {
+            background: #f0f0f0;
+        }
+        .stream-name {
+            font-weight: bold;
+        }
+        .stream-source {
+            font-family: monospace;
+            font-size: 11px;
+        }
+        .stream-channels, .stream-format {
+            text-align: center;
+        }
+        .no-streams, .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-style: italic;
+        }
+        #stream-list-content {
+            max-height: 300px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            padding: 10px;
+        }
+    </style>
+    
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="AES67 Router">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-autoDiscover">
+            <i class="fa fa-search"></i> Auto Discover
+        </label>
+        <input type="checkbox" id="node-input-autoDiscover" checked style="display:inline-block; width:auto;">
+        <span style="margin-left:10px">Start discovery automatically</span>
+    </div>
+    
+    <div class="aes67-section">
+        <div class="section-title">
+            <i class="fa fa-broadcast-tower"></i> Discovered AES67 Streams
+            <button id="refresh-streams-btn" class="red-ui-button red-ui-button-small" style="float:right">
+                <i class="fa fa-refresh"></i> Refresh
+            </button>
+        </div>
+        <div id="stream-list-content"></div>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="aes67-router">
+    <p>AES67 audio stream discovery and routing node using SAP/SDP protocols.</p>
+    
+    <h3>Features</h3>
+    <ul>
+        <li><b>Automatic Discovery</b> - Discovers AES67 streams using SAP (Session Announcement Protocol)</li>
+        <li><b>Standard Compliant</b> - Uses standard SDP for stream description</li>
+        <li><b>RTP Reception</b> - Can receive RTP audio streams</li>
+        <li><b>Multicast Support</b> - Supports both unicast and multicast streams</li>
+    </ul>
+    
+    <h3>AES67 Standards</h3>
+    <p>This node implements:</p>
+    <ul>
+        <li>SAP (RFC 2974) for stream announcement</li>
+        <li>SDP (RFC 4566) for stream description</li>
+        <li>RTP (RFC 3550) for audio transport</li>
+        <li>IEEE 1588-2008 PTP for synchronization reference</li>
+    </ul>
+    
+    <h3>Input Commands</h3>
+    <dl class="message-properties">
+        <dt>discover</dt>
+        <dd>Start stream discovery</dd>
+        <dt>list_streams</dt>
+        <dd>Get all discovered streams</dd>
+        <dt>subscribe</dt>
+        <dd>Subscribe to a stream (payload: {streamKey, localPort})</dd>
+        <dt>unsubscribe</dt>
+        <dd>Unsubscribe from a stream</dd>
+        <dt>status</dt>
+        <dd>Get node status</dd>
+    </dl>
+    
+    <h3>Outputs</h3>
+    <ol class="node-ports">
+        <li><b>Discovery Events</b> - Stream discovered/removed events</li>
+        <li><b>Audio Data</b> - RTP audio packets from subscribed streams</li>
+        <li><b>Status</b> - Status information and command responses</li>
+    </ol>
+    
+    <h3>Stream Format</h3>
+    <p>Discovered streams include:</p>
+    <ul>
+        <li>Stream name and description</li>
+        <li>Source and destination IP addresses</li>
+        <li>Number of audio channels</li>
+        <li>Sample rate and encoding (L24, L16, etc.)</li>
+        <li>Packet time (ptime)</li>
+        <li>Media clock reference (PTP)</li>
+    </ul>
+    
+    <p><b>Note:</b> AES67 is an open standard for audio-over-IP interoperability. 
+    This node should discover streams from any AES67-compliant device including Dante devices in AES67 mode, 
+    Ravenna, Livewire+, and Q-LAN devices.</p>
+</script>
