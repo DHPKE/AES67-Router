@@ -1,0 +1,236 @@
+[
+    {
+        "id": "aes67-example-flow",
+        "type": "tab",
+        "label": "AES67 Router Example",
+        "disabled": false,
+        "info": "# AES67 Router Example Flow\n\nThis flow demonstrates the basic usage of the AES67 Router node.\n\n## Features Demonstrated:\n- Automatic stream discovery\n- List discovered streams\n- Subscribe to a stream\n- View audio data\n- Monitor status\n\n## How to Use:\n1. Deploy the flow\n2. Click \"List Streams\" to see discovered AES67 streams\n3. Use the \"Subscribe\" inject node and modify the payload with a valid streamKey\n4. Monitor the debug panels for events and data"
+    },
+    {
+        "id": "aes67-router-1",
+        "type": "aes67-router",
+        "z": "aes67-example-flow",
+        "name": "AES67 Router",
+        "autoDiscover": true,
+        "x": 350,
+        "y": 200,
+        "wires": [
+            ["debug-discovery"],
+            ["debug-audio"],
+            ["debug-status"]
+        ]
+    },
+    {
+        "id": "debug-discovery",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Discovery Events",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "debug-audio",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Audio Data",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 560,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "debug-status",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Status & Responses",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 590,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "inject-list-streams",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "List Streams",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "list_streams",
+        "x": 140,
+        "y": 140,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "inject-status",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Get Status",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "status",
+        "x": 140,
+        "y": 180,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "inject-subscribe",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Subscribe to Stream",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "subscribe",
+        "payload": "{\"streamKey\":\"192.168.1.100:5004\",\"localPort\":5004}",
+        "payloadType": "json",
+        "x": 140,
+        "y": 220,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "inject-list-subscriptions",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "List Subscriptions",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "list_subscriptions",
+        "x": 140,
+        "y": 260,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "inject-discover",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Start Discovery",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "topic": "discover",
+        "x": 140,
+        "y": 100,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "comment-1",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "AES67 Router Example Flow - Safe and Stable",
+        "info": "This example demonstrates safe usage of the AES67 Router node.\n\nAll error conditions are handled gracefully without crashing Node-RED.",
+        "x": 230,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "comment-2",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "Commands: Click to send commands to the AES67 Router",
+        "info": "",
+        "x": 230,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "inject-unsubscribe",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Unsubscribe",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "unsubscribe",
+        "payload": "{\"subscriptionId\":\"192.168.1.100:5004_5004\"}",
+        "payloadType": "json",
+        "x": 140,
+        "y": 300,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    }
+]
