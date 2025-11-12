@@ -1,14 +1,26 @@
 # node-red-contrib-aes67-router
 
-AES67 audio stream discovery and routing for Node-RED. This node provides automatic discovery of AES67 audio streams using SAP/SDP protocols and enables receiving RTP audio streams.
+AES67 audio streaming for Node-RED with three dedicated nodes: Router (discovery), Sender (transmit), and Receiver (receive).
 
 ## Features
 
-- **Automatic Discovery** - Discovers AES67 streams using SAP (Session Announcement Protocol)
-- **Standard Compliant** - Uses standard SDP for stream description
-- **RTP Reception** - Can receive RTP audio streams
+- **AES67 Router** - Automatic discovery of AES67 streams using SAP/SDP protocols
+- **AES67 Sender** - Transmit audio streams with RTP and SAP announcements
+- **AES67 Receiver** - Receive RTP audio streams with buffer overflow protection
+- **Standard Compliant** - Implements AES67, SAP, SDP, and RTP standards
 - **Multicast Support** - Supports both unicast and multicast streams
 - **Production Ready** - Comprehensive error handling prevents Node-RED crashes
+
+## Nodes
+
+### AES67 Router
+Discovers AES67 audio streams on the network using SAP/SDP and enables subscribing to streams.
+
+### AES67 Sender
+Transmits AES67 audio streams via RTP with automatic SAP announcements for stream discovery.
+
+### AES67 Receiver
+Receives AES67 audio streams via RTP with safe packet parsing and buffer overflow protection.
 
 ## Installation
 
@@ -21,16 +33,22 @@ Or install directly from the Node-RED palette manager.
 
 ## Usage
 
-### Basic Flow Example
+This package provides three nodes for working with AES67 audio streams:
+
+### AES67 Router Node
+
+The router node discovers AES67 streams on your network and manages subscriptions.
+
+#### Basic Setup
 
 1. Add the **AES67 Router** node to your flow
 2. Enable "Auto Discover" in the node configuration (enabled by default)
 3. The node will automatically start discovering AES67 streams on your network
 4. Connect the outputs to debug nodes to see discovered streams and audio data
 
-### Input Commands
+#### Input Commands
 
-Send messages to the node with the following topics:
+Send messages to the router node with the following topics:
 
 - **`discover`** or **`start`** - Start stream discovery
 - **`list_streams`** - Get all discovered streams (output on port 3)
@@ -42,12 +60,68 @@ Send messages to the node with the following topics:
 - **`list_subscriptions`** - Get all active subscriptions (output on port 3)
 - **`status`** - Get node status (output on port 3)
 
-### Outputs
+#### Outputs
 
-The node has 3 outputs:
+The router node has 3 outputs:
 
 1. **Discovery Events** - Stream discovered/removed events
 2. **Audio Data** - RTP audio packets from subscribed streams
+3. **Status** - Status information and command responses
+
+### AES67 Sender Node
+
+The sender node transmits audio streams via RTP with automatic SAP announcements.
+
+#### Configuration
+
+- **Stream Name** - Name announced via SAP/SDP
+- **Destination IP** - Multicast or unicast IP address (e.g., 239.69.1.1)
+- **Destination Port** - UDP port for RTP stream (typically 5004+)
+- **Sample Rate** - Audio sample rate: 48000, 96000, or 44100 Hz
+- **Channels** - Number of audio channels (1, 2, 4, or 8)
+- **Encoding** - Audio format: L24 (24-bit PCM) or L16 (16-bit PCM)
+- **Packet Time** - Packet duration in milliseconds (typically 1ms)
+
+#### Usage
+
+Send audio data as a Buffer in `msg.payload`:
+
+```javascript
+msg.payload = audioBuffer;  // Buffer containing audio samples
+return msg;
+```
+
+The node automatically handles RTP packet construction, sequence numbering, and timestamps.
+
+### AES67 Receiver Node
+
+The receiver node listens for and receives RTP audio streams.
+
+#### Configuration
+
+- **Listen Port** - UDP port to listen on (typically 5004+)
+- **Multicast IP** - Optional multicast group to join (leave empty for unicast)
+
+#### Output
+
+Each received RTP packet produces an output message with:
+
+```javascript
+{
+  topic: "audio/data",
+  payload: audioBuffer,      // Audio data as Buffer
+  rtp: {                     // RTP header information
+    sequenceNumber: 12345,
+    timestamp: 67890,
+    ssrc: 0x12345678,
+    // ... other RTP header fields
+  },
+  source: {
+    address: "192.168.1.100",
+    port: 5004
+  }
+}
+```
 3. **Status** - Status information and command responses
 
 ### Example Flow

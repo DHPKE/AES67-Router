@@ -239,3 +239,202 @@
     This node should discover streams from any AES67-compliant device including Dante devices in AES67 mode, 
     Ravenna, Livewire+, and Q-LAN devices.</p>
 </script>
+
+<!-- AES67 Sender Node -->
+<script type="text/javascript">
+    RED.nodes.registerType('aes67-sender', {
+        category: 'network',
+        color: '#E5874B',
+        defaults: {
+            name: { value: "" },
+            streamName: { value: "Node-RED AES67 Stream" },
+            destIP: { value: "239.69.1.1" },
+            destPort: { value: 5004, validate: RED.validators.number() },
+            sampleRate: { value: 48000, validate: RED.validators.number() },
+            channels: { value: 2, validate: RED.validators.number() },
+            encoding: { value: "L24" },
+            ptime: { value: 1, validate: RED.validators.number() }
+        },
+        inputs: 1,
+        outputs: 0,
+        icon: "bridge.svg",
+        label: function() {
+            return this.name || "AES67 Sender";
+        },
+        paletteLabel: "AES67 Sender"
+    });
+</script>
+
+<script type="text/x-red" data-template-name="aes67-sender">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="AES67 Sender">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-streamName"><i class="fa fa-podcast"></i> Stream Name</label>
+        <input type="text" id="node-input-streamName" placeholder="Node-RED AES67 Stream">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-destIP"><i class="fa fa-server"></i> Destination IP</label>
+        <input type="text" id="node-input-destIP" placeholder="239.69.1.1">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-destPort"><i class="fa fa-plug"></i> Destination Port</label>
+        <input type="number" id="node-input-destPort" placeholder="5004">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-sampleRate"><i class="fa fa-sliders"></i> Sample Rate</label>
+        <select id="node-input-sampleRate">
+            <option value="48000">48000 Hz</option>
+            <option value="96000">96000 Hz</option>
+            <option value="44100">44100 Hz</option>
+        </select>
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-channels"><i class="fa fa-sound"></i> Channels</label>
+        <select id="node-input-channels">
+            <option value="1">1 (Mono)</option>
+            <option value="2">2 (Stereo)</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+        </select>
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-encoding"><i class="fa fa-code"></i> Encoding</label>
+        <select id="node-input-encoding">
+            <option value="L24">L24 (24-bit PCM)</option>
+            <option value="L16">L16 (16-bit PCM)</option>
+        </select>
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-ptime"><i class="fa fa-clock-o"></i> Packet Time (ms)</label>
+        <input type="number" id="node-input-ptime" placeholder="1">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="aes67-sender">
+    <p>Send AES67 audio streams using RTP with SAP announcements.</p>
+    
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">buffer</span></dt>
+        <dd>Audio data as a Buffer to transmit</dd>
+    </dl>
+    
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Stream Name</dt>
+        <dd>Name announced via SAP/SDP</dd>
+        
+        <dt>Destination IP</dt>
+        <dd>Multicast or unicast IP address to send to</dd>
+        
+        <dt>Destination Port</dt>
+        <dd>UDP port for RTP stream (typically 5004+)</dd>
+        
+        <dt>Sample Rate</dt>
+        <dd>Audio sample rate in Hz (48000, 96000, or 44100)</dd>
+        
+        <dt>Channels</dt>
+        <dd>Number of audio channels</dd>
+        
+        <dt>Encoding</dt>
+        <dd>Audio encoding format (L24 or L16)</dd>
+        
+        <dt>Packet Time</dt>
+        <dd>Packet duration in milliseconds</dd>
+    </dl>
+    
+    <h3>Details</h3>
+    <p>This node sends AES67-compliant audio streams using RTP (Real-time Transport Protocol).
+    If the sdp-transform module is available, it will also announce the stream via SAP
+    (Session Announcement Protocol) so it can be discovered by other AES67 devices.</p>
+    
+    <p>The input payload should be a Buffer containing audio samples in the configured format.
+    The node automatically handles RTP packet construction, sequence numbering, and timestamps.</p>
+    
+    <h3>Error Handling</h3>
+    <p>All errors are caught and logged without crashing Node-RED. Invalid input data is rejected safely.</p>
+</script>
+
+<!-- AES67 Receiver Node -->
+<script type="text/javascript">
+    RED.nodes.registerType('aes67-receiver', {
+        category: 'network',
+        color: '#4BE574',
+        defaults: {
+            name: { value: "" },
+            sourceIP: { value: "0.0.0.0" },
+            multicastIP: { value: "" },
+            port: { value: 5004, validate: RED.validators.number() }
+        },
+        inputs: 0,
+        outputs: 1,
+        icon: "bridge.svg",
+        label: function() {
+            return this.name || "AES67 Receiver";
+        },
+        paletteLabel: "AES67 Receiver"
+    });
+</script>
+
+<script type="text/x-red" data-template-name="aes67-receiver">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="AES67 Receiver">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-port"><i class="fa fa-plug"></i> Listen Port</label>
+        <input type="number" id="node-input-port" placeholder="5004">
+    </div>
+    
+    <div class="form-row">
+        <label for="node-input-multicastIP"><i class="fa fa-server"></i> Multicast IP</label>
+        <input type="text" id="node-input-multicastIP" placeholder="239.69.1.1 (optional)">
+        <span style="margin-left:10px; font-size:11px; color:#666;">Leave empty for unicast</span>
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="aes67-receiver">
+    <p>Receive AES67 audio streams via RTP.</p>
+    
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">buffer</span></dt>
+        <dd>Audio data extracted from RTP packets</dd>
+        
+        <dt>rtp <span class="property-type">object</span></dt>
+        <dd>RTP header information (sequence, timestamp, SSRC, etc.)</dd>
+        
+        <dt>source <span class="property-type">object</span></dt>
+        <dd>Source address and port of the RTP packet</dd>
+    </dl>
+    
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Listen Port</dt>
+        <dd>UDP port to listen for RTP packets (typically 5004+)</dd>
+        
+        <dt>Multicast IP (optional)</dt>
+        <dd>Multicast group to join. Leave empty for unicast reception.</dd>
+    </dl>
+    
+    <h3>Details</h3>
+    <p>This node receives AES67-compliant audio streams using RTP (Real-time Transport Protocol).
+    It binds to the specified port and optionally joins a multicast group to receive streams.</p>
+    
+    <p>Each received RTP packet is parsed, validated for buffer overflows, and the audio payload
+    is extracted and sent as output. The RTP header information is included for reference.</p>
+    
+    <h3>Error Handling</h3>
+    <p>All errors are caught and logged without crashing Node-RED. Malformed packets are rejected safely
+    with comprehensive bounds checking to prevent buffer overflows.</p>
+</script>
