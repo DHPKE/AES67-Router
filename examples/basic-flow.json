@@ -1,0 +1,245 @@
+[
+    {
+        "id": "aes67-example-flow",
+        "type": "tab",
+        "label": "AES67 Example - Router, Sender & Receiver",
+        "disabled": false,
+        "info": "# AES67 Complete Example Flow\n\nDemonstrates all three AES67 nodes:\n- Router for discovery\n- Sender for transmitting\n- Receiver for receiving\n\n## How to Use:\n1. Deploy the flow\n2. Router will discover AES67 streams\n3. Sender will transmit test audio\n4. Receiver will receive audio on port 5004"
+    },
+    {
+        "id": "aes67-router-1",
+        "type": "aes67-router",
+        "z": "aes67-example-flow",
+        "name": "AES67 Router",
+        "autoDiscover": true,
+        "x": 350,
+        "y": 100,
+        "wires": [
+            ["debug-discovery"],
+            ["debug-router-audio"],
+            ["debug-status"]
+        ]
+    },
+    {
+        "id": "aes67-sender-1",
+        "type": "aes67-sender",
+        "z": "aes67-example-flow",
+        "name": "AES67 Sender",
+        "streamName": "Node-RED Test Stream",
+        "destIP": "239.69.1.1",
+        "destPort": 5004,
+        "sampleRate": 48000,
+        "channels": 2,
+        "encoding": "L24",
+        "ptime": 1,
+        "x": 550,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "aes67-receiver-1",
+        "type": "aes67-receiver",
+        "z": "aes67-example-flow",
+        "name": "AES67 Receiver",
+        "sourceIP": "0.0.0.0",
+        "multicastIP": "239.69.1.1",
+        "port": 5004,
+        "x": 350,
+        "y": 400,
+        "wires": [
+            ["debug-receiver-audio"]
+        ]
+    },
+    {
+        "id": "debug-discovery",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Discovery Events",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "debug-router-audio",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Router Audio",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 560,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "debug-status",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Router Status",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 570,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "debug-receiver-audio",
+        "type": "debug",
+        "z": "aes67-example-flow",
+        "name": "Received Audio",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "inject-test-audio",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Send Test Audio",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 300,
+        "wires": [
+            ["function-create-audio"]
+        ]
+    },
+    {
+        "id": "function-create-audio",
+        "type": "function",
+        "z": "aes67-example-flow",
+        "name": "Create Audio Buffer",
+        "func": "// Create a simple test audio buffer (silence)\n// In real use, this would be actual audio data\nconst sampleRate = 48000;\nconst channels = 2;\nconst ptime = 1; // ms\nconst bytesPerSample = 3; // L24\n\nconst samplesPerPacket = (sampleRate * ptime) / 1000;\nconst bufferSize = samplesPerPacket * channels * bytesPerSample;\n\nmsg.payload = Buffer.alloc(bufferSize);\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 300,
+        "wires": [
+            ["aes67-sender-1"]
+        ]
+    },
+    {
+        "id": "inject-list-streams",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "List Streams",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "list_streams",
+        "x": 140,
+        "y": 100,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "inject-status",
+        "type": "inject",
+        "z": "aes67-example-flow",
+        "name": "Get Status",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "status",
+        "x": 140,
+        "y": 140,
+        "wires": [
+            ["aes67-router-1"]
+        ]
+    },
+    {
+        "id": "comment-router",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "AES67 Router - Discovery",
+        "info": "",
+        "x": 170,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "comment-sender",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "AES67 Sender - Transmit Audio",
+        "info": "",
+        "x": 180,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "comment-receiver",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "AES67 Receiver - Receive Audio",
+        "info": "",
+        "x": 180,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "comment-title",
+        "type": "comment",
+        "z": "aes67-example-flow",
+        "name": "Complete AES67 Example - All Three Nodes",
+        "info": "This flow demonstrates:\n1. Router for discovering streams\n2. Sender for transmitting audio\n3. Receiver for receiving audio",
+        "x": 220,
+        "y": 20,
+        "wires": []
+    }
+]

@@ -22,6 +22,9 @@
   "dependencies": {
     "sdp-transform": "^2.14.1"
   },
+  "optionalDependencies": {
+    "sdp-transform": "^2.14.1"
+  },
   "author": "DHPKE",
   "license": "MIT",
   "repository": {
@@ -30,5 +33,11 @@
   },
   "engines": {
     "node": ">=14.0.0"
-  }
+  },
+  "files": [
+    "aes67-router.js",
+    "aes67-router.html",
+    "README.md",
+    "examples/"
+  ]
 }

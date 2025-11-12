@@ -1,8 +1,17 @@
 module.exports = function(RED) {
     const dgram = require('dgram');
     const os = require('os');
-    const sdp = require('sdp-transform');
     const crypto = require('crypto');
+    
+    // Try to load sdp-transform, but make it optional
+    let sdp = null;
+    let sdpAvailable = false;
+    try {
+        sdp = require('sdp-transform');
+        sdpAvailable = true;
+    } catch (err) {
+        RED.log.warn('sdp-transform module not available. Some features will be limited.');
+    }
     
     // AES67 Constants
     const AES67_SAP_PORT = 9875;           // Session Announcement Protocol port
@@ -26,13 +35,22 @@ module.exports = function(RED) {
         }
         
         getLocalIP() {
-            const interfaces = os.networkInterfaces();
-            for (const name of Object.keys(interfaces)) {
-                for (const iface of interfaces[name]) {
-                    if (iface.family === 'IPv4' && !iface.internal) {
-                        return iface.address;
+            try {
+                const interfaces = os.networkInterfaces();
+                if (!interfaces) return '127.0.0.1';
+                
+                for (const name of Object.keys(interfaces)) {
+                    const ifaces = interfaces[name];
+                    if (!ifaces) continue;
+                    
+                    for (const iface of ifaces) {
+                        if (iface && iface.family === 'IPv4' && !iface.internal) {
+                            return iface.address;
+                        }
                     }
                 }
+            } catch (err) {
+                this.node.warn(`Error getting local IP: ${err.message}`);
             }
             return '127.0.0.1';
         }
@@ -70,43 +88,84 @@ module.exports = function(RED) {
         
         async createSAPSocket() {
             return new Promise((resolve, reject) => {
-                this.sapSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-                
-                this.sapSocket.on('error', (err) => {
-                    this.node.error(`SAP socket error: ${err.message}`);
-                    reject(err);
-                });
-                
-                this.sapSocket.on('message', (msg, rinfo) => {
-                    this.handleSAPMessage(msg, rinfo);
-                });
-                
-                this.sapSocket.on('listening', () => {
-                    const address = this.sapSocket.address();
-                    this.node.log(`SAP listener on ${address.address}:${address.port}`);
+                try {
+                    this.sapSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
                     
-                    // Join SAP multicast group
+                    this.sapSocket.on('error', (err) => {
+                        this.node.error(`SAP socket error: ${err.message}`);
+                        if (this.sapSocket) {
+                            try {
+                                this.sapSocket.close();
+                            } catch (e) {
+                                // Ignore close errors
+                            }
+                        }
+                        // Don't reject here to prevent crashes, just log
+                        this.node.status({ fill: "red", shape: "ring", text: "SAP error" });
+                    });
+                    
+                    this.sapSocket.on('message', (msg, rinfo) => {
+                        try {
+                            this.handleSAPMessage(msg, rinfo);
+                        } catch (err) {
+                            this.node.debug(`Error handling SAP message: ${err.message}`);
+                        }
+                    });
+                    
+                    this.sapSocket.on('listening', () => {
+                        try {
+                            const address = this.sapSocket.address();
+                            this.node.log(`SAP listener on ${address.address}:${address.port}`);
+                            
+                            // Join SAP multicast group with error handling
+                            try {
+                                this.sapSocket.addMembership(AES67_SAP_MULTICAST);
+                            } catch (e) {
+                                this.node.warn(`Could not join primary multicast ${AES67_SAP_MULTICAST}: ${e.message}`);
+                            }
+                            
+                            try {
+                                this.sapSocket.addMembership('239.192.0.0');
+                            } catch (e) {
+                                this.node.debug(`Could not join alternative multicast: ${e.message}`);
+                            }
+                            
+                            try {
+                                this.sapSocket.setBroadcast(true);
+                                this.sapSocket.setMulticastTTL(32);
+                            } catch (e) {
+                                this.node.debug(`Could not set socket options: ${e.message}`);
+                            }
+                            
+                            resolve();
+                        } catch (err) {
+                            this.node.error(`Error in SAP listening handler: ${err.message}`);
+                            reject(err);
+                        }
+                    });
+                    
+                    // Bind with error handling
                     try {
-                        this.sapSocket.addMembership(AES67_SAP_MULTICAST);
-                        this.sapSocket.addMembership('239.192.0.0'); // Alternative SAP multicast
-                        this.sapSocket.setBroadcast(true);
-                        this.sapSocket.setMulticastTTL(32);
-                    } catch (e) {
-                        this.node.warn(`Could not join multicast: ${e.message}`);
+                        this.sapSocket.bind(AES67_SAP_PORT, '0.0.0.0');
+                    } catch (err) {
+                        this.node.error(`Failed to bind SAP socket: ${err.message}`);
+                        reject(err);
                     }
-                    
-                    resolve();
-                });
-                
-                this.sapSocket.bind(AES67_SAP_PORT, '0.0.0.0');
+                } catch (err) {
+                    this.node.error(`Failed to create SAP socket: ${err.message}`);
+                    reject(err);
+                }
             });
         }
         
         handleSAPMessage(msg, rinfo) {
             try {
-                // Parse SAP header (RFC 2974)
-                if (msg.length < 8) return;
+                // Validate input
+                if (!msg || !Buffer.isBuffer(msg) || msg.length < 8) {
+                    return;
+                }
                 
+                // Parse SAP header (RFC 2974)
                 const sapHeader = {
                     version: (msg[0] >> 5) & 0x7,
                     addressType: (msg[0] >> 4) & 0x1,
@@ -121,12 +180,16 @@ module.exports = function(RED) {
                 // Skip if not a valid SAP packet
                 if (sapHeader.version !== 1) return;
                 
-                // Extract originating source
+                // Extract originating source with bounds checking
+                if (msg.length < 8) return;
                 const sourceIP = `${msg[4]}.${msg[5]}.${msg[6]}.${msg[7]}`;
                 
                 // Calculate SDP offset
                 let sdpOffset = 8; // Basic SAP header
                 sdpOffset += sapHeader.authLength * 4; // Authentication data
+                
+                // Validate offset is within bounds
+                if (sdpOffset >= msg.length) return;
                 
                 // Find the payload type field (after null terminator)
                 while (sdpOffset < msg.length && msg[sdpOffset] !== 0) {
@@ -134,56 +197,84 @@ module.exports = function(RED) {
                 }
                 sdpOffset += 1; // Skip null terminator
                 
+                // Validate offset is still within bounds
+                if (sdpOffset >= msg.length) return;
+                
                 // Skip payload type identifier
                 if (sdpOffset + 8 < msg.length) {
-                    const payloadType = msg.slice(sdpOffset, sdpOffset + 8).toString();
-                    if (payloadType.includes('sdp')) {
-                        sdpOffset += 8;
+                    try {
+                        const payloadType = msg.slice(sdpOffset, sdpOffset + 8).toString('utf8');
+                        if (payloadType.includes('sdp')) {
+                            sdpOffset += 8;
+                        }
+                    } catch (err) {
+                        // Ignore payload type parsing errors
                     }
                 }
+                
+                // Validate final offset
+                if (sdpOffset >= msg.length) return;
                 
                 // Extract SDP payload
                 const sdpData = msg.slice(sdpOffset).toString('utf8');
                 
-                if (sdpData.startsWith('v=0')) {
+                if (sdpData && sdpData.startsWith('v=0')) {
                     this.parseSDP(sdpData, sourceIP, rinfo.address, sapHeader.messageType);
                 }
                 
             } catch (err) {
-                // Invalid SAP packet, ignore
+                // Invalid SAP packet, log but don't crash
+                this.node.debug(`Error parsing SAP message: ${err.message}`);
             }
         }
         
         parseSDP(sdpString, sourceIP, actualIP, messageType) {
             try {
+                // Check if sdp-transform is available
+                if (!sdpAvailable || !sdp) {
+                    this.node.debug('SDP parsing skipped - sdp-transform not available');
+                    return;
+                }
+                
+                // Validate inputs
+                if (!sdpString || typeof sdpString !== 'string') {
+                    return;
+                }
+                
                 // Parse SDP using sdp-transform
                 const session = sdp.parse(sdpString);
                 
-                if (!session || !session.media) return;
+                if (!session || !session.media || !Array.isArray(session.media)) {
+                    return;
+                }
                 
                 // Process each media stream
                 session.media.forEach(media => {
-                    if (media.type === 'audio' && media.protocol === 'RTP/AVP') {
-                        const streamInfo = {
-                            id: session.origin?.sessionId || crypto.randomBytes(8).toString('hex'),
-                            name: session.name || 'AES67 Stream',
-                            description: session.description || '',
-                            sourceIP: actualIP || sourceIP,
-                            destIP: media.connection?.ip || session.connection?.ip,
-                            port: media.port,
-                            channels: this.extractChannels(media),
-                            sampleRate: this.extractSampleRate(media),
-                            encoding: this.extractEncoding(media),
-                            ptime: media.ptime || 1, // Packet time in ms
-                            mediaClk: this.extractMediaClock(media),
-                            isMulticast: this.isMulticastIP(media.connection?.ip || session.connection?.ip),
-                            sdp: sdpString,
-                            lastSeen: Date.now(),
-                            status: messageType === 0 ? 'active' : 'deleted'
-                        };
-                        
-                        // Register the stream
-                        this.registerStream(streamInfo);
+                    try {
+                        if (media && media.type === 'audio' && media.protocol === 'RTP/AVP') {
+                            const streamInfo = {
+                                id: (session.origin && session.origin.sessionId) || crypto.randomBytes(8).toString('hex'),
+                                name: session.name || 'AES67 Stream',
+                                description: session.description || '',
+                                sourceIP: actualIP || sourceIP || 'unknown',
+                                destIP: (media.connection && media.connection.ip) || (session.connection && session.connection.ip) || 'unknown',
+                                port: media.port || 0,
+                                channels: this.extractChannels(media),
+                                sampleRate: this.extractSampleRate(media),
+                                encoding: this.extractEncoding(media),
+                                ptime: media.ptime || 1, // Packet time in ms
+                                mediaClk: this.extractMediaClock(media),
+                                isMulticast: this.isMulticastIP((media.connection && media.connection.ip) || (session.connection && session.connection.ip)),
+                                sdp: sdpString,
+                                lastSeen: Date.now(),
+                                status: messageType === 0 ? 'active' : 'deleted'
+                            };
+                            
+                            // Register the stream
+                            this.registerStream(streamInfo);
+                        }
+                    } catch (err) {
+                        this.node.debug(`Error processing media stream: ${err.message}`);
                     }
                 });
                 
@@ -193,197 +284,270 @@ module.exports = function(RED) {
         }
         
         extractChannels(media) {
-            // Look for channel count in rtpmap
-            if (media.rtpmap) {
-                for (const rtpmap of media.rtpmap) {
-                    if (rtpmap.channels) {
-                        return rtpmap.channels;
+            try {
+                // Look for channel count in rtpmap
+                if (media && media.rtpmap && Array.isArray(media.rtpmap)) {
+                    for (const rtpmap of media.rtpmap) {
+                        if (rtpmap && rtpmap.channels) {
+                            return parseInt(rtpmap.channels) || 2;
+                        }
                     }
                 }
+            } catch (err) {
+                this.node.debug(`Error extracting channels: ${err.message}`);
             }
             // Default to 2 channels (stereo)
             return 2;
         }
         
         extractSampleRate(media) {
-            // Look for sample rate in rtpmap
-            if (media.rtpmap) {
-                for (const rtpmap of media.rtpmap) {
-                    if (rtpmap.rate) {
-                        return rtpmap.rate;
+            try {
+                // Look for sample rate in rtpmap
+                if (media && media.rtpmap && Array.isArray(media.rtpmap)) {
+                    for (const rtpmap of media.rtpmap) {
+                        if (rtpmap && rtpmap.rate) {
+                            return parseInt(rtpmap.rate) || AES67_SAMPLE_RATE;
+                        }
                     }
                 }
+            } catch (err) {
+                this.node.debug(`Error extracting sample rate: ${err.message}`);
             }
             return AES67_SAMPLE_RATE;
         }
         
         extractEncoding(media) {
-            // Look for encoding in rtpmap
-            if (media.rtpmap) {
-                for (const rtpmap of media.rtpmap) {
-                    if (rtpmap.name) {
-                        return rtpmap.name; // L24, L16, etc.
+            try {
+                // Look for encoding in rtpmap
+                if (media && media.rtpmap && Array.isArray(media.rtpmap)) {
+                    for (const rtpmap of media.rtpmap) {
+                        if (rtpmap && rtpmap.name) {
+                            return rtpmap.name; // L24, L16, etc.
+                        }
                     }
                 }
+            } catch (err) {
+                this.node.debug(`Error extracting encoding: ${err.message}`);
             }
             return 'L24'; // Default to 24-bit PCM
         }
         
         extractMediaClock(media) {
-            // Look for media clock reference
-            if (media.mediaclk) {
-                return media.mediaclk;
-            }
-            // Check for PTP clock
-            if (media.tsRefClk) {
-                return media.tsRefClk;
+            try {
+                // Look for media clock reference
+                if (media && media.mediaclk) {
+                    return media.mediaclk;
+                }
+                // Check for PTP clock
+                if (media && media.tsRefClk) {
+                    return media.tsRefClk;
+                }
+            } catch (err) {
+                this.node.debug(`Error extracting media clock: ${err.message}`);
             }
             return 'ptp=IEEE1588-2008:00-00-00-00-00-00-00-00:0';
         }
         
         isMulticastIP(ip) {
-            if (!ip) return false;
-            const parts = ip.split('.');
-            const firstOctet = parseInt(parts[0]);
-            return firstOctet >= 224 && firstOctet <= 239;
+            try {
+                if (!ip || typeof ip !== 'string') return false;
+                const parts = ip.split('.');
+                if (parts.length !== 4) return false;
+                const firstOctet = parseInt(parts[0]);
+                return !isNaN(firstOctet) && firstOctet >= 224 && firstOctet <= 239;
+            } catch (err) {
+                return false;
+            }
         }
         
         registerStream(streamInfo) {
-            const streamKey = `${streamInfo.sourceIP}:${streamInfo.port}`;
-            
-            // Check if this is a new stream
-            const isNew = !this.streams.has(streamKey);
-            
-            // Update stream registry
-            this.streams.set(streamKey, streamInfo);
-            globalStreamRegistry.set(streamKey, streamInfo);
-            
-            // Extract device info
-            const deviceKey = streamInfo.sourceIP;
-            if (!this.devices.has(deviceKey)) {
-                this.devices.set(deviceKey, {
-                    ip: streamInfo.sourceIP,
-                    name: streamInfo.sourceIP,
-                    streams: []
-                });
-            }
-            
-            const device = this.devices.get(deviceKey);
-            if (!device.streams.includes(streamKey)) {
-                device.streams.push(streamKey);
-            }
-            
-            // Send notification for new streams
-            if (isNew && streamInfo.status === 'active') {
-                this.node.send([{
-                    topic: 'stream/discovered',
-                    payload: streamInfo
-                }, null, null]);
+            try {
+                if (!streamInfo || !streamInfo.sourceIP || !streamInfo.port) {
+                    return;
+                }
                 
-                this.node.log(`Discovered AES67 stream: ${streamInfo.name} from ${streamInfo.sourceIP} (${streamInfo.channels}ch @ ${streamInfo.sampleRate}Hz)`);
+                const streamKey = `${streamInfo.sourceIP}:${streamInfo.port}`;
+                
+                // Check if this is a new stream
+                const isNew = !this.streams.has(streamKey);
+                
+                // Update stream registry
+                this.streams.set(streamKey, streamInfo);
+                globalStreamRegistry.set(streamKey, streamInfo);
+                
+                // Extract device info
+                const deviceKey = streamInfo.sourceIP;
+                if (!this.devices.has(deviceKey)) {
+                    this.devices.set(deviceKey, {
+                        ip: streamInfo.sourceIP,
+                        name: streamInfo.sourceIP,
+                        streams: []
+                    });
+                }
+                
+                const device = this.devices.get(deviceKey);
+                if (device && !device.streams.includes(streamKey)) {
+                    device.streams.push(streamKey);
+                }
+                
+                // Send notification for new streams
+                if (isNew && streamInfo.status === 'active') {
+                    try {
+                        this.node.send([{
+                            topic: 'stream/discovered',
+                            payload: streamInfo
+                        }, null, null]);
+                        
+                        this.node.log(`Discovered AES67 stream: ${streamInfo.name} from ${streamInfo.sourceIP} (${streamInfo.channels}ch @ ${streamInfo.sampleRate}Hz)`);
+                    } catch (err) {
+                        this.node.debug(`Error sending discovery event: ${err.message}`);
+                    }
+                }
+                
+                this.updateNodeStatus();
+            } catch (err) {
+                this.node.error(`Error registering stream: ${err.message}`);
             }
-            
-            this.updateNodeStatus();
         }
         
         sendSAPAnnouncements() {
-            // Announce our own streams (if any)
-            // This is where you would announce streams this node is transmitting
-            
-            // For now, send a discovery probe
-            const discoverySDP = this.createDiscoverySDP();
-            const sapPacket = this.createSAPPacket(discoverySDP);
-            
-            if (this.sapSocket) {
-                this.sapSocket.send(sapPacket, AES67_SAP_PORT, AES67_SAP_MULTICAST, (err) => {
-                    if (err) {
-                        this.node.debug(`SAP send error: ${err.message}`);
-                    }
-                });
+            try {
+                // Check if sdp is available
+                if (!sdpAvailable || !sdp) {
+                    return;
+                }
+                
+                // Announce our own streams (if any)
+                // For now, send a discovery probe
+                const discoverySDP = this.createDiscoverySDP();
+                if (!discoverySDP) return;
+                
+                const sapPacket = this.createSAPPacket(discoverySDP);
+                if (!sapPacket) return;
+                
+                if (this.sapSocket && this.running) {
+                    this.sapSocket.send(sapPacket, AES67_SAP_PORT, AES67_SAP_MULTICAST, (err) => {
+                        if (err) {
+                            this.node.debug(`SAP send error: ${err.message}`);
+                        }
+                    });
+                }
+            } catch (err) {
+                this.node.debug(`Error sending SAP announcement: ${err.message}`);
             }
         }
         
         createDiscoverySDP() {
-            const session = {
-                version: 0,
-                origin: {
-                    username: 'node-red',
-                    sessionId: Date.now().toString(),
-                    sessionVersion: 1,
-                    netType: 'IN',
-                    addressType: 'IP4',
-                    unicastAddress: this.localIP
-                },
-                name: 'Node-RED AES67 Discovery',
-                timing: {
-                    start: 0,
-                    stop: 0
-                },
-                connection: {
-                    version: 'IP4',
-                    ip: '0.0.0.0'
+            try {
+                if (!sdpAvailable || !sdp) {
+                    return null;
                 }
-            };
-            
-            return sdp.write(session);
+                
+                const session = {
+                    version: 0,
+                    origin: {
+                        username: 'node-red',
+                        sessionId: Date.now().toString(),
+                        sessionVersion: 1,
+                        netType: 'IN',
+                        addressType: 'IP4',
+                        unicastAddress: this.localIP
+                    },
+                    name: 'Node-RED AES67 Discovery',
+                    timing: {
+                        start: 0,
+                        stop: 0
+                    },
+                    connection: {
+                        version: 'IP4',
+                        ip: '0.0.0.0'
+                    }
+                };
+                
+                return sdp.write(session);
+            } catch (err) {
+                this.node.debug(`Error creating discovery SDP: ${err.message}`);
+                return null;
+            }
         }
         
         createSAPPacket(sdpData) {
-            const sdpBuffer = Buffer.from(sdpData, 'utf8');
-            const packet = Buffer.allocUnsafe(8 + 8 + sdpBuffer.length);
-            
-            // SAP Header
-            packet[0] = 0x20; // Version 1, IPv4, announcement
-            packet[1] = 0x00; // No authentication
-            packet.writeUInt16BE(0x0000, 2); // Message ID hash
-            
-            // Originating source (our IP)
-            const ipParts = this.localIP.split('.').map(p => parseInt(p));
-            packet[4] = ipParts[0];
-            packet[5] = ipParts[1];
-            packet[6] = ipParts[2];
-            packet[7] = ipParts[3];
-            
-            // Payload type
-            packet.write('application/sdp', 8, 'ascii');
-            
-            // SDP data
-            sdpBuffer.copy(packet, 8 + 8);
-            
-            return packet;
+            try {
+                if (!sdpData) return null;
+                
+                const sdpBuffer = Buffer.from(sdpData, 'utf8');
+                const packet = Buffer.allocUnsafe(8 + 8 + sdpBuffer.length);
+                
+                // SAP Header
+                packet[0] = 0x20; // Version 1, IPv4, announcement
+                packet[1] = 0x00; // No authentication
+                packet.writeUInt16BE(0x0000, 2); // Message ID hash
+                
+                // Originating source (our IP)
+                const ipParts = this.localIP.split('.').map(p => parseInt(p) || 0);
+                if (ipParts.length !== 4) return null;
+                
+                packet[4] = ipParts[0];
+                packet[5] = ipParts[1];
+                packet[6] = ipParts[2];
+                packet[7] = ipParts[3];
+                
+                // Payload type
+                packet.write('application/sdp', 8, 'ascii');
+                
+                // SDP data
+                sdpBuffer.copy(packet, 8 + 8);
+                
+                return packet;
+            } catch (err) {
+                this.node.debug(`Error creating SAP packet: ${err.message}`);
+                return null;
+            }
         }
         
         cleanupStaleStreams() {
-            const now = Date.now();
-            const timeout = 120000; // 2 minutes
-            
-            for (const [key, stream] of this.streams) {
-                if (now - stream.lastSeen > timeout) {
-                    this.streams.delete(key);
-                    globalStreamRegistry.delete(key);
-                    
-                    this.node.send([{
-                        topic: 'stream/removed',
-                        payload: stream
-                    }, null, null]);
+            try {
+                const now = Date.now();
+                const timeout = 120000; // 2 minutes
+                
+                for (const [key, stream] of this.streams) {
+                    try {
+                        if (stream && stream.lastSeen && (now - stream.lastSeen > timeout)) {
+                            this.streams.delete(key);
+                            globalStreamRegistry.delete(key);
+                            
+                            this.node.send([{
+                                topic: 'stream/removed',
+                                payload: stream
+                            }, null, null]);
+                        }
+                    } catch (err) {
+                        this.node.debug(`Error cleaning up stream ${key}: ${err.message}`);
+                    }
                 }
+                
+                this.updateNodeStatus();
+            } catch (err) {
+                this.node.error(`Error in cleanup: ${err.message}`);
             }
-            
-            this.updateNodeStatus();
         }
         
         updateNodeStatus() {
-            const streamCount = this.streams.size;
-            const deviceCount = this.devices.size;
-            
-            if (streamCount === 0) {
-                this.node.status({ fill: "yellow", shape: "ring", text: "searching for AES67 streams..." });
-            } else {
-                this.node.status({ 
-                    fill: "green", 
-                    shape: "dot", 
-                    text: `${streamCount} streams from ${deviceCount} devices` 
-                });
+            try {
+                const streamCount = this.streams.size;
+                const deviceCount = this.devices.size;
+                
+                if (streamCount === 0) {
+                    this.node.status({ fill: "yellow", shape: "ring", text: "searching for AES67 streams..." });
+                } else {
+                    this.node.status({ 
+                        fill: "green", 
+                        shape: "dot", 
+                        text: `${streamCount} streams from ${deviceCount} devices` 
+                    });
+                }
+            } catch (err) {
+                this.node.error(`Error updating status: ${err.message}`);
             }
         }
         
@@ -423,72 +587,826 @@ module.exports = function(RED) {
         }
         
         createSubscription(streamKey, localPort) {
-            const stream = globalStreamRegistry.get(streamKey);
-            if (!stream) {
-                return { success: false, error: 'Stream not found' };
-            }
-            
-            const subscriptionId = `${streamKey}_${localPort}`;
-            
-            if (this.subscriptions.has(subscriptionId)) {
-                return { success: false, error: 'Subscription already exists' };
-            }
-            
-            // Create RTP receiver socket
-            const rtpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-            
-            rtpSocket.on('message', (msg, rinfo) => {
-                // Handle RTP packets
-                this.handleRTPPacket(msg, rinfo, subscriptionId);
-            });
-            
-            rtpSocket.on('error', (err) => {
-                this.node.warn(`RTP socket error: ${err.message}`);
-            });
-            
-            // Bind to local port
-            rtpSocket.bind(localPort || 0, '0.0.0.0', () => {
-                const actualPort = rtpSocket.address().port;
-                
-                // Join multicast group if needed
-                if (stream.isMulticast) {
-                    try {
-                        rtpSocket.addMembership(stream.destIP);
-                    } catch (e) {
-                        this.node.warn(`Could not join multicast ${stream.destIP}: ${e.message}`);
-                    }
+            try {
+                if (!streamKey) {
+                    return { success: false, error: 'Stream key is required' };
                 }
                 
-                const subscription = {
-                    id: subscriptionId,
-                    stream: stream,
-                    localPort: actualPort,
-                    created: new Date().toISOString(),
-                    packetsReceived: 0,
-                    bytesReceived: 0,
-                    status: 'active'
-                };
+                const stream = globalStreamRegistry.get(streamKey);
+                if (!stream) {
+                    return { success: false, error: 'Stream not found' };
+                }
                 
-                this.subscriptions.set(subscriptionId, subscription);
-                this.rtpSockets.set(subscriptionId, rtpSocket);
+                const subscriptionId = `${streamKey}_${localPort || 'auto'}`;
                 
-                this.node.log(`Created AES67 subscription: ${stream.name} on port ${actualPort}`);
-            });
-            
-            return { 
-                success: true, 
-                subscription: subscriptionId,
-                message: `Subscribed to ${stream.name}`
-            };
+                if (this.subscriptions.has(subscriptionId)) {
+                    return { success: false, error: 'Subscription already exists' };
+                }
+                
+                // Create RTP receiver socket
+                try {
+                    const rtpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+                    
+                    rtpSocket.on('message', (msg, rinfo) => {
+                        try {
+                            // Handle RTP packets
+                            this.handleRTPPacket(msg, rinfo, subscriptionId);
+                        } catch (err) {
+                            this.node.debug(`Error handling RTP packet: ${err.message}`);
+                        }
+                    });
+                    
+                    rtpSocket.on('error', (err) => {
+                        this.node.warn(`RTP socket error for ${subscriptionId}: ${err.message}`);
+                        // Don't crash, just log the error
+                    });
+                    
+                    // Bind to local port
+                    rtpSocket.bind(localPort || 0, '0.0.0.0', () => {
+                        try {
+                            const actualPort = rtpSocket.address().port;
+                            
+                            // Join multicast group if needed
+                            if (stream.isMulticast && stream.destIP) {
+                                try {
+                                    rtpSocket.addMembership(stream.destIP);
+                                } catch (e) {
+                                    this.node.warn(`Could not join multicast ${stream.destIP}: ${e.message}`);
+                                }
+                            }
+                            
+                            const subscription = {
+                                id: subscriptionId,
+                                stream: stream,
+                                localPort: actualPort,
+                                created: new Date().toISOString(),
+                                packetsReceived: 0,
+                                bytesReceived: 0,
+                                status: 'active'
+                            };
+                            
+                            this.subscriptions.set(subscriptionId, subscription);
+                            this.rtpSockets.set(subscriptionId, rtpSocket);
+                            
+                            this.node.log(`Created AES67 subscription: ${stream.name} on port ${actualPort}`);
+                        } catch (err) {
+                            this.node.error(`Error in bind callback: ${err.message}`);
+                            try {
+                                rtpSocket.close();
+                            } catch (e) {
+                                // Ignore close errors
+                            }
+                        }
+                    });
+                    
+                    return { 
+                        success: true, 
+                        subscription: subscriptionId,
+                        message: `Subscribed to ${stream.name}`
+                    };
+                } catch (err) {
+                    this.node.error(`Failed to create RTP socket: ${err.message}`);
+                    return { success: false, error: `Failed to create socket: ${err.message}` };
+                }
+                
+            } catch (err) {
+                this.node.error(`Error creating subscription: ${err.message}`);
+                return { success: false, error: err.message };
+            }
         }
         
         handleRTPPacket(msg, rinfo, subscriptionId) {
-            const subscription = this.subscriptions.get(subscriptionId);
-            if (!subscription) return;
+            try {
+                // Validate inputs
+                if (!msg || !Buffer.isBuffer(msg) || msg.length < 12) {
+                    return; // RTP header is at least 12 bytes
+                }
+                
+                const subscription = this.subscriptions.get(subscriptionId);
+                if (!subscription) return;
+                
+                // Update statistics
+                subscription.packetsReceived++;
+                subscription.bytesReceived += msg.length;
+                
+                // Parse RTP header with bounds checking
+                const rtpHeader = {
+                    version: (msg[0] >> 6) & 0x3,
+                    padding: (msg[0] >> 5) & 0x1,
+                    extension: (msg[0] >> 4) & 0x1,
+                    csrcCount: msg[0] & 0xF,
+                    marker: (msg[1] >> 7) & 0x1,
+                    payloadType: msg[1] & 0x7F,
+                    sequenceNumber: msg.readUInt16BE(2),
+                    timestamp: msg.readUInt32BE(4),
+                    ssrc: msg.readUInt32BE(8)
+                };
+                
+                // Calculate header length with bounds checking
+                let headerLength = 12 + (rtpHeader.csrcCount * 4);
+                
+                // Validate header length doesn't exceed buffer
+                if (headerLength > msg.length) {
+                    this.node.debug(`Invalid RTP packet: header length exceeds buffer`);
+                    return;
+                }
+                
+                if (rtpHeader.extension && (headerLength + 4 <= msg.length)) {
+                    const extLength = msg.readUInt16BE(headerLength + 2) * 4;
+                    headerLength += 4 + extLength;
+                }
+                
+                // Final validation
+                if (headerLength > msg.length) {
+                    this.node.debug(`Invalid RTP packet: total header length exceeds buffer`);
+                    return;
+                }
+                
+                // Extract audio payload
+                const audioPayload = msg.slice(headerLength);
+                
+                // Send audio data event
+                this.node.send([null, {
+                    topic: 'audio/data',
+                    payload: {
+                        subscriptionId: subscriptionId,
+                        streamName: subscription.stream.name,
+                        rtp: rtpHeader,
+                        audio: audioPayload,
+                        format: {
+                            encoding: subscription.stream.encoding,
+                            channels: subscription.stream.channels,
+                            sampleRate: subscription.stream.sampleRate
+                        }
+                    }
+                }, null]);
+                
+            } catch (err) {
+                this.node.debug(`Error handling RTP packet: ${err.message}`);
+            }
+        }
+        
+        removeSubscription(subscriptionId) {
+            try {
+                if (!subscriptionId) {
+                    return { success: false, error: 'Subscription ID is required' };
+                }
+                
+                const subscription = this.subscriptions.get(subscriptionId);
+                if (!subscription) {
+                    return { success: false, error: 'Subscription not found' };
+                }
+                
+                // Close RTP socket
+                const socket = this.rtpSockets.get(subscriptionId);
+                if (socket) {
+                    try {
+                        socket.close();
+                    } catch (err) {
+                        this.node.debug(`Error closing socket: ${err.message}`);
+                    }
+                    this.rtpSockets.delete(subscriptionId);
+                }
+                
+                this.subscriptions.delete(subscriptionId);
+                
+                return { 
+                    success: true, 
+                    message: `Removed subscription to ${subscription.stream.name}`
+                };
+            } catch (err) {
+                this.node.error(`Error removing subscription: ${err.message}`);
+                return { success: false, error: err.message };
+            }
+        }
+        
+        getSubscriptions() {
+            return Array.from(this.subscriptions.values());
+        }
+        
+        shutdown() {
+            try {
+                // Close all RTP sockets
+                for (const [id, socket] of this.rtpSockets) {
+                    try {
+                        socket.close();
+                    } catch (e) {
+                        this.node.debug(`Error closing socket ${id}: ${e.message}`);
+                    }
+                }
+                this.rtpSockets.clear();
+                this.subscriptions.clear();
+            } catch (err) {
+                this.node.error(`Error in shutdown: ${err.message}`);
+            }
+        }
+    }
+    
+    // Main Node-RED Node
+    function AES67RouterNode(config) {
+        try {
+            RED.nodes.createNode(this, config);
+            const node = this;
             
-            // Update statistics
-            subscription.packetsReceived++;
-            subscription.bytesReceived += msg.length;
+            node.name = config.name || 'AES67 Router';
+            node.autoDiscover = config.autoDiscover !== false;
+            
+            // Initialize components with error handling
+            try {
+                node.discovery = new AES67Discovery(node);
+                node.router = new AES67Router(node);
+            } catch (err) {
+                node.error(`Failed to initialize AES67 components: ${err.message}`);
+                node.status({ fill: "red", shape: "ring", text: "initialization error" });
+                return;
+            }
+            
+            // Start discovery
+            if (node.autoDiscover) {
+                // Use setImmediate to avoid blocking Node-RED startup
+                setImmediate(() => {
+                    try {
+                        node.discovery.start();
+                    } catch (err) {
+                        node.error(`Failed to start discovery: ${err.message}`);
+                        node.status({ fill: "red", shape: "ring", text: "discovery error" });
+                    }
+                });
+            }
+            
+            // Handle input messages
+            node.on('input', function(msg, send, done) {
+                // Ensure send and done are available
+                send = send || function() { node.send.apply(node, arguments) };
+                done = done || function(err) { if(err) node.error(err, msg) };
+                
+                try {
+                    // Validate msg object
+                    if (!msg || typeof msg !== 'object') {
+                        done(new Error('Invalid message object'));
+                        return;
+                    }
+                    
+                    const topic = (msg.topic || '').toLowerCase();
+                    const payload = msg.payload || {};
+                    
+                    let response = null;
+                    let outputPort = 0;
+                    
+                    try {
+                        switch(topic) {
+                            case 'discover':
+                            case 'start':
+                                node.discovery.start();
+                                response = {
+                                    topic: 'discovery/started',
+                                    payload: { message: 'AES67 discovery started' }
+                                };
+                                break;
+                                
+                            case 'streams':
+                            case 'list_streams':
+                                response = {
+                                    topic: 'streams',
+                                    payload: node.discovery.getStreams()
+                                };
+                                outputPort = 2; // Status output
+                                break;
+                                
+                            case 'devices':
+                            case 'list_devices':
+                                response = {
+                                    topic: 'devices',
+                                    payload: node.discovery.getDevices()
+                                };
+                                outputPort = 2;
+                                break;
+                                
+                            case 'subscribe':
+                                if (payload && payload.streamKey) {
+                                    const result = node.router.createSubscription(
+                                        payload.streamKey,
+                                        payload.localPort
+                                    );
+                                    response = {
+                                        topic: result.success ? 'subscribed' : 'subscription_error',
+                                        payload: result
+                                    };
+                                } else {
+                                    node.error('Stream key required for subscription', msg);
+                                    response = {
+                                        topic: 'subscription_error',
+                                        payload: { error: 'Stream key required' }
+                                    };
+                                    outputPort = 2;
+                                }
+                                break;
+                                
+                            case 'unsubscribe':
+                                if (payload && payload.subscriptionId) {
+                                    const result = node.router.removeSubscription(payload.subscriptionId);
+                                    response = {
+                                        topic: 'unsubscribed',
+                                        payload: result
+                                    };
+                                } else {
+                                    node.error('Subscription ID required for unsubscribe', msg);
+                                    response = {
+                                        topic: 'error',
+                                        payload: { error: 'Subscription ID required' }
+                                    };
+                                    outputPort = 2;
+                                }
+                                break;
+                                
+                            case 'subscriptions':
+                            case 'list_subscriptions':
+                                response = {
+                                    topic: 'subscriptions',
+                                    payload: node.router.getSubscriptions()
+                                };
+                                outputPort = 2;
+                                break;
+                                
+                            case 'status':
+                                response = {
+                                    topic: 'status',
+                                    payload: {
+                                        streams: node.discovery.getStreams().length,
+                                        devices: node.discovery.getDevices().length,
+                                        subscriptions: node.router.getSubscriptions().length,
+                                        discovery: node.discovery.running ? 'active' : 'stopped',
+                                        sdpAvailable: sdpAvailable
+                                    }
+                                };
+                                outputPort = 2;
+                                break;
+                                
+                            default:
+                                if (topic) {
+                                    node.warn(`Unknown topic: ${topic}`);
+                                }
+                                break;
+                        }
+                        
+                        if (response) {
+                            const outputs = [null, null, null];
+                            outputs[outputPort] = response;
+                            send(outputs);
+                        }
+                        
+                        done();
+                        
+                    } catch (error) {
+                        node.error(`Error processing message: ${error.message}`, msg);
+                        send([null, null, {
+                            topic: 'error',
+                            payload: { error: error.message }
+                        }]);
+                        done();
+                    }
+                } catch (err) {
+                    node.error(`Critical error in input handler: ${err.message}`, msg);
+                    done(err);
+                }
+            });
+            
+            // Cleanup
+            node.on('close', function(done) {
+                try {
+                    if (node.discovery) {
+                        node.discovery.stop();
+                    }
+                    if (node.router) {
+                        node.router.shutdown();
+                    }
+                    // Give sockets time to close
+                    setTimeout(() => {
+                        done();
+                    }, 100);
+                } catch (err) {
+                    node.error(`Error during cleanup: ${err.message}`);
+                    done();
+                }
+            });
+            
+            node.log('AES67 Router node initialized');
+            
+        } catch (err) {
+            // Critical error during node creation
+            RED.log.error(`Failed to create AES67 Router node: ${err.message}`);
+            if (this.error) {
+                this.error(`Initialization failed: ${err.message}`);
+            }
+            if (this.status) {
+                this.status({ fill: "red", shape: "ring", text: "initialization failed" });
+            }
+        }
+    }
+    
+    // AES67 Sender Node
+    function AES67SenderNode(config) {
+        try {
+            RED.nodes.createNode(this, config);
+            const node = this;
+            
+            node.name = config.name || 'AES67 Sender';
+            node.streamName = config.streamName || 'Node-RED AES67 Stream';
+            node.destIP = config.destIP || '239.69.1.1';
+            node.destPort = parseInt(config.destPort) || 5004;
+            node.sampleRate = parseInt(config.sampleRate) || 48000;
+            node.channels = parseInt(config.channels) || 2;
+            node.encoding = config.encoding || 'L24';
+            node.ptime = parseInt(config.ptime) || 1;
+            
+            node.rtpSocket = null;
+            node.sapSocket = null;
+            node.sapInterval = null;
+            node.sequenceNumber = 0;
+            node.timestamp = 0;
+            node.ssrc = crypto.randomBytes(4).readUInt32BE(0);
+            
+            // Get local IP
+            node.localIP = getLocalIPAddress();
+            
+            // Initialize status
+            node.status({ fill: "yellow", shape: "ring", text: "initializing..." });
+            
+            // Create RTP sender socket
+            try {
+                node.rtpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+                
+                node.rtpSocket.on('error', (err) => {
+                    node.error(`RTP socket error: ${err.message}`);
+                    node.status({ fill: "red", shape: "ring", text: "socket error" });
+                });
+                
+                node.rtpSocket.bind(0, () => {
+                    const address = node.rtpSocket.address();
+                    node.log(`RTP sender bound to port ${address.port}`);
+                    node.status({ fill: "green", shape: "dot", text: "ready" });
+                    
+                    // Start SAP announcements if sdp is available
+                    if (sdpAvailable && sdp) {
+                        startSAPAnnouncements(node);
+                    } else {
+                        node.warn('SAP announcements disabled - sdp-transform not available');
+                    }
+                });
+                
+            } catch (err) {
+                node.error(`Failed to create RTP socket: ${err.message}`);
+                node.status({ fill: "red", shape: "ring", text: "socket error" });
+            }
+            
+            // Handle input messages
+            node.on('input', function(msg, send, done) {
+                send = send || function() { node.send.apply(node, arguments) };
+                done = done || function(err) { if(err) node.error(err, msg) };
+                
+                try {
+                    if (!msg || typeof msg !== 'object') {
+                        done(new Error('Invalid message object'));
+                        return;
+                    }
+                    
+                    if (!node.rtpSocket) {
+                        node.error('RTP socket not initialized', msg);
+                        done(new Error('RTP socket not initialized'));
+                        return;
+                    }
+                    
+                    // Extract audio payload
+                    const audioData = msg.payload;
+                    
+                    if (!audioData || !Buffer.isBuffer(audioData)) {
+                        node.error('Payload must be a Buffer containing audio data', msg);
+                        done(new Error('Invalid audio data'));
+                        return;
+                    }
+                    
+                    // Create RTP packet
+                    const rtpPacket = createRTPPacket(node, audioData);
+                    
+                    if (!rtpPacket) {
+                        node.error('Failed to create RTP packet', msg);
+                        done(new Error('RTP packet creation failed'));
+                        return;
+                    }
+                    
+                    // Send RTP packet
+                    node.rtpSocket.send(rtpPacket, node.destPort, node.destIP, (err) => {
+                        if (err) {
+                            node.error(`Failed to send RTP packet: ${err.message}`, msg);
+                            done(err);
+                        } else {
+                            done();
+                        }
+                    });
+                    
+                } catch (err) {
+                    node.error(`Error processing message: ${err.message}`, msg);
+                    done(err);
+                }
+            });
+            
+            // Cleanup on close
+            node.on('close', function(done) {
+                try {
+                    if (node.sapInterval) {
+                        clearInterval(node.sapInterval);
+                    }
+                    
+                    if (node.sapSocket) {
+                        try {
+                            node.sapSocket.close();
+                        } catch (e) {
+                            node.debug(`Error closing SAP socket: ${e.message}`);
+                        }
+                    }
+                    
+                    if (node.rtpSocket) {
+                        try {
+                            node.rtpSocket.close();
+                        } catch (e) {
+                            node.debug(`Error closing RTP socket: ${e.message}`);
+                        }
+                    }
+                    
+                    setTimeout(() => done(), 100);
+                } catch (err) {
+                    node.error(`Error during cleanup: ${err.message}`);
+                    done();
+                }
+            });
+            
+        } catch (err) {
+            RED.log.error(`Failed to create AES67 Sender node: ${err.message}`);
+            if (this.error) {
+                this.error(`Initialization failed: ${err.message}`);
+            }
+            if (this.status) {
+                this.status({ fill: "red", shape: "ring", text: "initialization failed" });
+            }
+        }
+    }
+    
+    // AES67 Receiver Node
+    function AES67ReceiverNode(config) {
+        try {
+            RED.nodes.createNode(this, config);
+            const node = this;
+            
+            node.name = config.name || 'AES67 Receiver';
+            node.sourceIP = config.sourceIP || '0.0.0.0';
+            node.multicastIP = config.multicastIP || '';
+            node.port = parseInt(config.port) || 5004;
+            node.rtpSocket = null;
+            node.packetsReceived = 0;
+            
+            // Initialize status
+            node.status({ fill: "yellow", shape: "ring", text: "initializing..." });
+            
+            // Create RTP receiver socket
+            try {
+                node.rtpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+                
+                node.rtpSocket.on('error', (err) => {
+                    node.error(`RTP socket error: ${err.message}`);
+                    node.status({ fill: "red", shape: "ring", text: "socket error" });
+                });
+                
+                node.rtpSocket.on('message', (msg, rinfo) => {
+                    try {
+                        handleReceivedRTPPacket(node, msg, rinfo);
+                    } catch (err) {
+                        node.debug(`Error handling RTP packet: ${err.message}`);
+                    }
+                });
+                
+                node.rtpSocket.bind(node.port, '0.0.0.0', () => {
+                    try {
+                        const address = node.rtpSocket.address();
+                        node.log(`RTP receiver listening on port ${address.port}`);
+                        
+                        // Join multicast group if specified
+                        if (node.multicastIP && node.multicastIP !== '') {
+                            try {
+                                node.rtpSocket.addMembership(node.multicastIP);
+                                node.log(`Joined multicast group ${node.multicastIP}`);
+                                node.status({ fill: "green", shape: "dot", text: `listening (multicast)` });
+                            } catch (err) {
+                                node.warn(`Could not join multicast ${node.multicastIP}: ${err.message}`);
+                                node.status({ fill: "green", shape: "dot", text: `listening (unicast)` });
+                            }
+                        } else {
+                            node.status({ fill: "green", shape: "dot", text: `listening on ${address.port}` });
+                        }
+                    } catch (err) {
+                        node.error(`Error in bind callback: ${err.message}`);
+                        node.status({ fill: "red", shape: "ring", text: "bind error" });
+                    }
+                });
+                
+            } catch (err) {
+                node.error(`Failed to create RTP socket: ${err.message}`);
+                node.status({ fill: "red", shape: "ring", text: "socket error" });
+            }
+            
+            // Cleanup on close
+            node.on('close', function(done) {
+                try {
+                    if (node.rtpSocket) {
+                        try {
+                            node.rtpSocket.close();
+                        } catch (e) {
+                            node.debug(`Error closing RTP socket: ${e.message}`);
+                        }
+                    }
+                    
+                    setTimeout(() => done(), 100);
+                } catch (err) {
+                    node.error(`Error during cleanup: ${err.message}`);
+                    done();
+                }
+            });
+            
+        } catch (err) {
+            RED.log.error(`Failed to create AES67 Receiver node: ${err.message}`);
+            if (this.error) {
+                this.error(`Initialization failed: ${err.message}`);
+            }
+            if (this.status) {
+                this.status({ fill: "red", shape: "ring", text: "initialization failed" });
+            }
+        }
+    }
+    
+    // Helper function to get local IP
+    function getLocalIPAddress() {
+        try {
+            const interfaces = os.networkInterfaces();
+            if (!interfaces) return '127.0.0.1';
+            
+            for (const name of Object.keys(interfaces)) {
+                const ifaces = interfaces[name];
+                if (!ifaces) continue;
+                
+                for (const iface of ifaces) {
+                    if (iface && iface.family === 'IPv4' && !iface.internal) {
+                        return iface.address;
+                    }
+                }
+            }
+        } catch (err) {
+            RED.log.warn(`Error getting local IP: ${err.message}`);
+        }
+        return '127.0.0.1';
+    }
+    
+    // Helper function to create RTP packet
+    function createRTPPacket(node, audioData) {
+        try {
+            if (!audioData || !Buffer.isBuffer(audioData)) {
+                return null;
+            }
+            
+            const headerLength = 12; // RTP header without extensions
+            const packet = Buffer.allocUnsafe(headerLength + audioData.length);
+            
+            // RTP Header
+            packet[0] = 0x80; // V=2, P=0, X=0, CC=0
+            packet[1] = 0x60; // M=0, PT=96 (dynamic)
+            packet.writeUInt16BE(node.sequenceNumber & 0xFFFF, 2);
+            packet.writeUInt32BE(node.timestamp, 4);
+            packet.writeUInt32BE(node.ssrc, 8);
+            
+            // Copy audio data
+            audioData.copy(packet, headerLength);
+            
+            // Update sequence number and timestamp
+            node.sequenceNumber = (node.sequenceNumber + 1) & 0xFFFF;
+            const samplesPerPacket = Math.floor((node.sampleRate * node.ptime) / 1000);
+            node.timestamp = (node.timestamp + samplesPerPacket) & 0xFFFFFFFF;
+            
+            return packet;
+        } catch (err) {
+            node.error(`Error creating RTP packet: ${err.message}`);
+            return null;
+        }
+    }
+    
+    // Helper function to start SAP announcements
+    function startSAPAnnouncements(node) {
+        try {
+            if (!sdpAvailable || !sdp) {
+                return;
+            }
+            
+            // Create SAP socket
+            node.sapSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+            
+            node.sapSocket.on('error', (err) => {
+                node.warn(`SAP socket error: ${err.message}`);
+            });
+            
+            // Create SDP description
+            const createSDP = () => {
+                try {
+                    const session = {
+                        version: 0,
+                        origin: {
+                            username: 'node-red',
+                            sessionId: Date.now().toString(),
+                            sessionVersion: 1,
+                            netType: 'IN',
+                            addressType: 'IP4',
+                            unicastAddress: node.localIP
+                        },
+                        name: node.streamName,
+                        timing: { start: 0, stop: 0 },
+                        connection: {
+                            version: 4,
+                            ip: node.destIP
+                        },
+                        media: [{
+                            type: 'audio',
+                            port: node.destPort,
+                            protocol: 'RTP/AVP',
+                            payloads: '96',
+                            rtpmap: [{
+                                payload: 96,
+                                codec: node.encoding,
+                                rate: node.sampleRate,
+                                encoding: node.channels
+                            }],
+                            ptime: node.ptime
+                        }]
+                    };
+                    
+                    return sdp.write(session);
+                } catch (err) {
+                    node.warn(`Error creating SDP: ${err.message}`);
+                    return null;
+                }
+            };
+            
+            // Send SAP announcement
+            const sendSAP = () => {
+                try {
+                    const sdpData = createSDP();
+                    if (!sdpData) return;
+                    
+                    const sdpBuffer = Buffer.from(sdpData, 'utf8');
+                    const packet = Buffer.allocUnsafe(8 + sdpBuffer.length);
+                    
+                    // SAP Header
+                    packet[0] = 0x20; // V=1, A=0, R=0, T=0, E=0, C=0
+                    packet[1] = 0x00; // No authentication
+                    packet.writeUInt16BE(0x0000, 2); // Message ID hash
+                    
+                    // Originating source
+                    const ipParts = node.localIP.split('.').map(p => parseInt(p) || 0);
+                    if (ipParts.length === 4) {
+                        packet[4] = ipParts[0];
+                        packet[5] = ipParts[1];
+                        packet[6] = ipParts[2];
+                        packet[7] = ipParts[3];
+                    }
+                    
+                    // SDP data
+                    sdpBuffer.copy(packet, 8);
+                    
+                    node.sapSocket.send(packet, AES67_SAP_PORT, AES67_SAP_MULTICAST, (err) => {
+                        if (err) {
+                            node.debug(`SAP send error: ${err.message}`);
+                        }
+                    });
+                } catch (err) {
+                    node.warn(`Error sending SAP: ${err.message}`);
+                }
+            };
+            
+            // Send initial announcement
+            sendSAP();
+            
+            // Send periodic announcements (every 30 seconds)
+            node.sapInterval = setInterval(sendSAP, 30000);
+            
+        } catch (err) {
+            node.warn(`Failed to start SAP announcements: ${err.message}`);
+        }
+    }
+    
+    // Helper function to handle received RTP packets
+    function handleReceivedRTPPacket(node, msg, rinfo) {
+        try {
+            // Validate input
+            if (!msg || !Buffer.isBuffer(msg) || msg.length < 12) {
+                return;
+            }
+            
+            node.packetsReceived++;
             
             // Parse RTP header
             const rtpHeader = {
@@ -503,219 +1421,107 @@ module.exports = function(RED) {
                 ssrc: msg.readUInt32BE(8)
             };
             
-            // Calculate header length
+            // Validate RTP version
+            if (rtpHeader.version !== 2) {
+                return;
+            }
+            
+            // Calculate header length with bounds checking
             let headerLength = 12 + (rtpHeader.csrcCount * 4);
-            if (rtpHeader.extension) {
-                headerLength += 4 + (msg.readUInt16BE(headerLength + 2) * 4);
+            
+            if (headerLength > msg.length) {
+                node.debug('Invalid RTP packet: header exceeds buffer');
+                return;
+            }
+            
+            if (rtpHeader.extension && (headerLength + 4 <= msg.length)) {
+                const extLength = msg.readUInt16BE(headerLength + 2) * 4;
+                headerLength += 4 + extLength;
+            }
+            
+            if (headerLength > msg.length) {
+                node.debug('Invalid RTP packet: total header exceeds buffer');
+                return;
             }
             
             // Extract audio payload
             const audioPayload = msg.slice(headerLength);
             
-            // Send audio data event
-            this.node.send([null, {
+            // Update status periodically
+            if (node.packetsReceived % 100 === 0) {
+                node.status({ 
+                    fill: "green", 
+                    shape: "dot", 
+                    text: `${node.packetsReceived} packets` 
+                });
+            }
+            
+            // Send output message
+            node.send({
                 topic: 'audio/data',
-                payload: {
-                    subscriptionId: subscriptionId,
-                    streamName: subscription.stream.name,
-                    rtp: rtpHeader,
-                    audio: audioPayload,
-                    format: {
-                        encoding: subscription.stream.encoding,
-                        channels: subscription.stream.channels,
-                        sampleRate: subscription.stream.sampleRate
-                    }
+                payload: audioPayload,
+                rtp: rtpHeader,
+                source: {
+                    address: rinfo.address,
+                    port: rinfo.port
                 }
-            }, null]);
-        }
-        
-        removeSubscription(subscriptionId) {
-            const subscription = this.subscriptions.get(subscriptionId);
-            if (!subscription) {
-                return { success: false, error: 'Subscription not found' };
-            }
+            });
             
-            // Close RTP socket
-            const socket = this.rtpSockets.get(subscriptionId);
-            if (socket) {
-                socket.close();
-                this.rtpSockets.delete(subscriptionId);
-            }
-            
-            this.subscriptions.delete(subscriptionId);
-            
-            return { 
-                success: true, 
-                message: `Removed subscription to ${subscription.stream.name}`
-            };
-        }
-        
-        getSubscriptions() {
-            return Array.from(this.subscriptions.values());
-        }
-        
-        shutdown() {
-            // Close all RTP sockets
-            for (const socket of this.rtpSockets.values()) {
-                try {
-                    socket.close();
-                } catch (e) {}
-            }
-            this.rtpSockets.clear();
-            this.subscriptions.clear();
+        } catch (err) {
+            node.debug(`Error parsing RTP packet: ${err.message}`);
         }
     }
     
-    // Main Node-RED Node
-    function AES67RouterNode(config) {
-        RED.nodes.createNode(this, config);
-        const node = this;
-        
-        node.name = config.name || 'AES67 Router';
-        node.autoDiscover = config.autoDiscover !== false;
-        
-        // Initialize components
-        node.discovery = new AES67Discovery(node);
-        node.router = new AES67Router(node);
-        
-        // Start discovery
-        if (node.autoDiscover) {
-            node.discovery.start();
-        }
-        
-        // Handle input messages
-        node.on('input', function(msg, send, done) {
-            send = send || function() { node.send.apply(node, arguments) };
-            done = done || function(err) { if(err) node.error(err, msg) };
-            
-            const topic = (msg.topic || '').toLowerCase();
-            const payload = msg.payload || {};
-            
-            let response = null;
-            let outputPort = 0;
-            
-            try {
-                switch(topic) {
-                    case 'discover':
-                    case 'start':
-                        node.discovery.start();
-                        response = {
-                            topic: 'discovery/started',
-                            payload: { message: 'AES67 discovery started' }
-                        };
-                        break;
-                        
-                    case 'streams':
-                    case 'list_streams':
-                        response = {
-                            topic: 'streams',
-                            payload: node.discovery.getStreams()
-                        };
-                        outputPort = 2; // Status output
-                        break;
-                        
-                    case 'devices':
-                    case 'list_devices':
-                        response = {
-                            topic: 'devices',
-                            payload: node.discovery.getDevices()
-                        };
-                        outputPort = 2;
-                        break;
-                        
-                    case 'subscribe':
-                        if (payload.streamKey) {
-                            const result = node.router.createSubscription(
-                                payload.streamKey,
-                                payload.localPort
-                            );
-                            response = {
-                                topic: result.success ? 'subscribed' : 'subscription_error',
-                                payload: result
-                            };
-                        } else {
-                            throw new Error('Stream key required for subscription');
-                        }
-                        break;
-                        
-                    case 'unsubscribe':
-                        if (payload.subscriptionId) {
-                            const result = node.router.removeSubscription(payload.subscriptionId);
-                            response = {
-                                topic: 'unsubscribed',
-                                payload: result
-                            };
-                        }
-                        break;
-                        
-                    case 'subscriptions':
-                    case 'list_subscriptions':
-                        response = {
-                            topic: 'subscriptions',
-                            payload: node.router.getSubscriptions()
-                        };
-                        outputPort = 2;
-                        break;
-                        
-                    case 'status':
-                        response = {
-                            topic: 'status',
-                            payload: {
-                                streams: node.discovery.getStreams().length,
-                                devices: node.discovery.getDevices().length,
-                                subscriptions: node.router.getSubscriptions().length,
-                                discovery: node.discovery.running ? 'active' : 'stopped'
-                            }
-                        };
-                        outputPort = 2;
-                        break;
-                }
-                
-                if (response) {
-                    const outputs = [null, null, null];
-                    outputs[outputPort] = response;
-                    send(outputs);
-                }
-                
-                done();
-                
-            } catch (error) {
-                node.error(error.message);
-                send([null, null, {
-                    topic: 'error',
-                    payload: { error: error.message }
-                }]);
-                done();
-            }
-        });
-        
-        // Cleanup
-        node.on('close', function(done) {
-            node.discovery.stop();
-            node.router.shutdown();
-            done();
-        });
-        
-        node.log('AES67 Router node initialized');
+    // Register the node types with error handling
+    try {
+        RED.nodes.registerType("aes67-router", AES67RouterNode);
+    } catch (err) {
+        RED.log.error(`Failed to register AES67 Router node: ${err.message}`);
     }
     
-    RED.nodes.registerType("aes67-router", AES67RouterNode);
+    try {
+        RED.nodes.registerType("aes67-sender", AES67SenderNode);
+    } catch (err) {
+        RED.log.error(`Failed to register AES67 Sender node: ${err.message}`);
+    }
     
-    // HTTP Admin endpoints
+    try {
+        RED.nodes.registerType("aes67-receiver", AES67ReceiverNode);
+    } catch (err) {
+        RED.log.error(`Failed to register AES67 Receiver node: ${err.message}`);
+    }
+    
+    // HTTP Admin endpoints with error handling
     RED.httpAdmin.get('/aes67/streams', function(req, res) {
-        const streams = Array.from(globalStreamRegistry.values());
-        res.json(streams);
+        try {
+            const streams = Array.from(globalStreamRegistry.values());
+            res.json(streams);
+        } catch (err) {
+            RED.log.error(`Error getting streams: ${err.message}`);
+            res.status(500).json({ error: 'Internal server error' });
+        }
     });
     
     RED.httpAdmin.post('/aes67/subscribe', function(req, res) {
-        const { nodeId, streamKey, localPort } = req.body;
-        const node = RED.nodes.getNode(nodeId);
-        
-        if (node && node.router) {
-            const result = node.router.createSubscription(streamKey, localPort);
-            res.json(result);
-        } else {
-            res.status(404).json({ error: 'Node not found' });
+        try {
+            const { nodeId, streamKey, localPort } = req.body || {};
+            
+            if (!nodeId || !streamKey) {
+                res.status(400).json({ error: 'Missing required parameters' });
+                return;
+            }
+            
+            const node = RED.nodes.getNode(nodeId);
+            
+            if (node && node.router) {
+                const result = node.router.createSubscription(streamKey, localPort);
+                res.json(result);
+            } else {
+                res.status(404).json({ error: 'Node not found' });
+            }
+        } catch (err) {
+            RED.log.error(`Error creating subscription: ${err.message}`);
+            res.status(500).json({ error: 'Internal server error' });
         }
     });
 };
