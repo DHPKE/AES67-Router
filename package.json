@@ -1,7 +1,7 @@
 {
   "name": "node-red-contrib-aes67-router",
   "version": "1.0.0",
-  "description": "AES67 audio stream discovery and routing for Node-RED",
+  "description": "AES67 audio-over-IP streaming, discovery, and routing for Node-RED with sender and receiver nodes",
   "keywords": [
     "node-red",
     "aes67",
@@ -14,7 +14,9 @@
   "node-red": {
     "version": ">=2.0.0",
     "nodes": {
-      "aes67-router": "aes67-router.js"
+      "aes67-router": "aes67-router.js",
+      "aes67-sender": "aes67-sender.js",
+      "aes67-receiver": "aes67-receiver.js"
     }
   },
   "dependencies": {

@@ -1,0 +1,331 @@
+<script type="text/javascript">
+    RED.nodes.registerType('aes67-receiver', {
+        category: 'network',
+        color: '#4B7BE5',
+        defaults: {
+            name: { value: "" },
+            streamSource: { value: "manual" },
+            sourceIP: { value: "" },
+            sourcePort: { value: 5004, validate: RED.validators.number() },
+            multicastGroup: { value: "" },
+            localPort: { value: 0, validate: RED.validators.number() },
+            sampleRate: { value: 48000, required: true, validate: RED.validators.number() },
+            channels: { value: 2, required: true, validate: RED.validators.number() },
+            encoding: { value: "L24", required: true },
+            outputMode: { value: "buffer" }
+        },
+        inputs: 1,
+        outputs: 1,
+        outputLabels: ["audio data"],
+        icon: "bridge-dash.svg",
+        label: function() {
+            return this.name || "AES67 Receiver";
+        },
+        paletteLabel: "AES67 Receiver",
+        
+        oneditprepare: function() {
+            var node = this;
+            
+            // Sample rate dropdown
+            $("#node-input-sampleRate").typedInput({
+                types: [{
+                    value: "sampleRate",
+                    options: [
+                        { value: 48000, label: "48 kHz" },
+                        { value: 96000, label: "96 kHz" },
+                        { value: 44100, label: "44.1 kHz" },
+                        { value: 88200, label: "88.2 kHz" }
+                    ]
+                }]
+            });
+            
+            // Encoding dropdown
+            $("#node-input-encoding").typedInput({
+                types: [{
+                    value: "encoding",
+                    options: [
+                        { value: "L24", label: "L24 (24-bit PCM)" },
+                        { value: "L16", label: "L16 (16-bit PCM)" }
+                    ]
+                }]
+            });
+            
+            // Output mode dropdown
+            $("#node-input-outputMode").typedInput({
+                types: [{
+                    value: "outputMode",
+                    options: [
+                        { value: "buffer", label: "Buffered (smoother)" },
+                        { value: "stream", label: "Stream (immediate)" }
+                    ]
+                }]
+            });
+            
+            // Stream source toggle
+            $("#node-input-streamSource").on('change', function() {
+                var source = $(this).val();
+                if (source === 'auto') {
+                    $(".manual-config").hide();
+                    $(".auto-info").show();
+                } else {
+                    $(".manual-config").show();
+                    $(".auto-info").hide();
+                }
+            });
+            
+            // Load discovered streams
+            function loadStreams() {
+                $('#stream-selector').html('<option value="">Loading streams...</option>');
+                
+                $.getJSON('aes67/streams', function(streams) {
+                    var html = '<option value="">-- Select a stream --</option>';
+                    
+                    streams.forEach(function(stream) {
+                        var streamKey = stream.sourceIP + ':' + stream.port;
+                        var label = stream.name + ' (' + stream.channels + 'ch @ ' + stream.sampleRate + 'Hz)';
+                        html += '<option value="' + streamKey + '" data-ip="' + stream.destIP + '" data-port="' + stream.port + '" data-rate="' + stream.sampleRate + '" data-channels="' + stream.channels + '" data-encoding="' + stream.encoding + '">' + label + '</option>';
+                    });
+                    
+                    $('#stream-selector').html(html);
+                });
+            }
+            
+            // Auto-fill from selected stream
+            $('#stream-selector').on('change', function() {
+                var selected = $(this).find('option:selected');
+                if (selected.val()) {
+                    $('#node-input-multicastGroup').val(selected.data('ip'));
+                    $('#node-input-sourcePort').val(selected.data('port'));
+                    $('#node-input-sampleRate').val(selected.data('rate'));
+                    $('#node-input-channels').val(selected.data('channels'));
+                    $('#node-input-encoding').val(selected.data('encoding'));
+                }
+            });
+            
+            // Initial state
+            $("#node-input-streamSource").trigger('change');
+            
+            // Load streams if in auto mode
+            if (this.streamSource === 'auto') {
+                loadStreams();
+            }
+            
+            // Refresh streams button
+            $('#refresh-streams-btn').click(function() {
+                loadStreams();
+            });
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="aes67-receiver">
+    <style>
+        .aes67-section { 
+            border: 1px solid #4B7BE5; 
+            padding: 12px; 
+            margin: 10px 0; 
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+            font-size: 14px;
+        }
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+    </style>
+    
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="AES67 Receiver">
+    </div>
+    
+    <div class="aes67-section auto-info" style="display:none;">
+        <div class="section-title"><i class="fa fa-search"></i> Stream Selection</div>
+        
+        <div class="form-row">
+            <label for="stream-selector"><i class="fa fa-list"></i> Available Streams</label>
+            <select id="stream-selector" style="width: 70%;">
+                <option value="">-- No streams discovered --</option>
+            </select>
+            <button id="refresh-streams-btn" class="red-ui-button red-ui-button-small" style="margin-left: 5px;">
+                <i class="fa fa-refresh"></i> Refresh
+            </button>
+        </div>
+        
+        <div class="info-box">
+            <strong>Auto Discovery:</strong> Select a stream discovered by the AES67 Router node. 
+            Configuration will be filled automatically.
+        </div>
+    </div>
+    
+    <div class="aes67-section">
+        <div class="section-title"><i class="fa fa-network-wired"></i> Network Configuration</div>
+        
+        <div class="form-row manual-config">
+            <label for="node-input-multicastGroup"><i class="fa fa-bullseye"></i> Multicast Group</label>
+            <input type="text" id="node-input-multicastGroup" placeholder="239.69.1.1">
+            <span style="margin-left: 10px; font-size: 11px; color: #666;">Leave empty for unicast</span>
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-localPort"><i class="fa fa-plug"></i> Local Port</label>
+            <input type="number" id="node-input-localPort" min="0" max="65535" placeholder="0">
+            <span style="margin-left: 10px; font-size: 11px; color: #666;">0 = auto-assign</span>
+        </div>
+    </div>
+    
+    <div class="aes67-section">
+        <div class="section-title"><i class="fa fa-stream"></i> Audio Format</div>
+        
+        <div class="form-row">
+            <label for="node-input-sampleRate"><i class="fa fa-wave-square"></i> Sample Rate</label>
+            <input type="text" id="node-input-sampleRate">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-channels"><i class="fa fa-sliders"></i> Channels</label>
+            <input type="number" id="node-input-channels" min="1" max="64" placeholder="2">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-encoding"><i class="fa fa-code"></i> Encoding</label>
+            <input type="text" id="node-input-encoding">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-outputMode"><i class="fa fa-stream"></i> Output Mode</label>
+            <input type="text" id="node-input-outputMode">
+        </div>
+    </div>
+    
+    <div class="warning-box">
+        <strong><i class="fa fa-exclamation-triangle"></i> Note:</strong> This node receives AES67 RTP audio and outputs raw PCM data as Buffer objects. 
+        To play audio, connect this node to an audio output node or write the data to a file/stream.
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="aes67-receiver">
+    <p>Receives audio from an AES67-compliant RTP stream.</p>
+    
+    <h3>Features</h3>
+    <ul>
+        <li><b>AES67 Compliant</b> - Follows SMPTE ST 2110-30 standard</li>
+        <li><b>RTP Reception</b> - Receives audio over RTP (RFC 3550)</li>
+        <li><b>Multicast Support</b> - Supports both unicast and multicast streams</li>
+        <li><b>Packet Loss Detection</b> - Monitors and reports packet loss</li>
+        <li><b>Buffering</b> - Configurable buffering for smooth playback</li>
+        <li><b>Multiple Formats</b> - Supports various sample rates and channel counts</li>
+    </ul>
+    
+    <h3>Output</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">buffer</span></dt>
+        <dd>Raw PCM audio data as a Buffer</dd>
+        
+        <dt>format <span class="property-type">object</span></dt>
+        <dd>Audio format information including sampleRate, channels, encoding, and bytesPerSample</dd>
+        
+        <dt>rtp <span class="property-type">object</span></dt>
+        <dd>RTP header information including timestamp, sequenceNumber, and ssrc</dd>
+        
+        <dt>topic <span class="property-type">string</span></dt>
+        <dd>Set to "audio" for audio data, "status" for status responses</dd>
+    </dl>
+    
+    <h3>Input</h3>
+    <dl class="message-properties">
+        <dt class="optional">topic <span class="property-type">string</span></dt>
+        <dd>Set to "control" for control messages or "subscribe" for dynamic stream subscription</dd>
+        
+        <dt class="optional">payload <span class="property-type">object</span></dt>
+        <dd>For control messages: { command: "status" or "reset" }<br>
+            For subscribe: { multicastGroup, sampleRate, channels, encoding }</dd>
+    </dl>
+    
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Multicast Group</dt>
+        <dd>Multicast IP address to join (239.x.x.x range). Leave empty for unicast.</dd>
+        
+        <dt>Local Port</dt>
+        <dd>UDP port to bind for receiving RTP packets. Use 0 for auto-assignment.</dd>
+        
+        <dt>Sample Rate</dt>
+        <dd>Expected audio sample rate in Hz (must match sender)</dd>
+        
+        <dt>Channels</dt>
+        <dd>Expected number of audio channels (must match sender)</dd>
+        
+        <dt>Encoding</dt>
+        <dd>Expected PCM encoding format: L24 (24-bit) or L16 (16-bit)</dd>
+        
+        <dt>Output Mode</dt>
+        <dd>
+            <ul>
+                <li><b>Buffered:</b> Accumulates audio in buffer and outputs smooth chunks</li>
+                <li><b>Stream:</b> Outputs each RTP packet immediately as received</li>
+            </ul>
+        </dd>
+    </dl>
+    
+    <h3>Control Messages</h3>
+    <p>Send control messages with topic="control" and payload.command:</p>
+    <ul>
+        <li><b>status</b> - Get receiver status and statistics</li>
+        <li><b>reset</b> - Reset packet counters and clear audio buffer</li>
+    </ul>
+    
+    <h3>Dynamic Subscription</h3>
+    <p>Send a message with topic="subscribe" and payload containing:</p>
+    <pre>{
+  "multicastGroup": "239.69.1.1",
+  "sampleRate": 48000,
+  "channels": 2,
+  "encoding": "L24"
+}</pre>
+    
+    <h3>Output Audio Format</h3>
+    <p>Output audio is raw PCM samples in the following format:</p>
+    <ul>
+        <li><b>Byte Order:</b> Big-endian (network byte order)</li>
+        <li><b>Sample Size:</b> 24-bit or 16-bit depending on encoding</li>
+        <li><b>Channel Order:</b> Interleaved (L, R, L, R for stereo)</li>
+    </ul>
+    
+    <h3>Statistics</h3>
+    <p>The node monitors reception quality and displays:</p>
+    <ul>
+        <li>Number of packets received</li>
+        <li>Packet loss rate (percentage)</li>
+        <li>Buffer fill level</li>
+    </ul>
+    
+    <h3>Integration with AES67 Router</h3>
+    <p>This node can work with the AES67 Router node for stream discovery:</p>
+    <ol>
+        <li>Use AES67 Router to discover available streams</li>
+        <li>Send discovered stream info to this receiver via "subscribe" message</li>
+        <li>Receiver automatically configures and starts receiving</li>
+    </ol>
+    
+    <p><b>Note:</b> Audio output is provided as raw PCM buffers via msg.payload. 
+    To play audio on speakers, connect this node to an audio output node or write to an audio device/file.
+    The node focuses on AES67-compliant RTP reception and does not include audio device drivers.</p>
+</script>

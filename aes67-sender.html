@@ -1,0 +1,268 @@
+<script type="text/javascript">
+    RED.nodes.registerType('aes67-sender', {
+        category: 'network',
+        color: '#4B7BE5',
+        defaults: {
+            name: { value: "" },
+            streamName: { value: "AES67 Stream", required: true },
+            sampleRate: { value: 48000, required: true, validate: RED.validators.number() },
+            channels: { value: 2, required: true, validate: RED.validators.number() },
+            encoding: { value: "L24", required: true },
+            ptime: { value: 1, required: true, validate: RED.validators.number() },
+            destIP: { value: "239.69.1.1", required: true },
+            destPort: { value: 5004, required: true, validate: RED.validators.number() },
+            ptpDomain: { value: 0, validate: RED.validators.number() },
+            enableSAP: { value: true }
+        },
+        inputs: 1,
+        outputs: 0,
+        icon: "bridge-dash.svg",
+        label: function() {
+            return this.name || this.streamName || "AES67 Sender";
+        },
+        paletteLabel: "AES67 Sender",
+        
+        oneditprepare: function() {
+            // Sample rate dropdown
+            $("#node-input-sampleRate").typedInput({
+                types: [{
+                    value: "sampleRate",
+                    options: [
+                        { value: 48000, label: "48 kHz" },
+                        { value: 96000, label: "96 kHz" },
+                        { value: 44100, label: "44.1 kHz" },
+                        { value: 88200, label: "88.2 kHz" }
+                    ]
+                }]
+            });
+            
+            // Encoding dropdown
+            $("#node-input-encoding").typedInput({
+                types: [{
+                    value: "encoding",
+                    options: [
+                        { value: "L24", label: "L24 (24-bit PCM)" },
+                        { value: "L16", label: "L16 (16-bit PCM)" }
+                    ]
+                }]
+            });
+            
+            // Update encoding info when sample rate changes
+            $("#node-input-sampleRate").on('change', function() {
+                updateBitrateInfo();
+            });
+            
+            $("#node-input-channels").on('change', function() {
+                updateBitrateInfo();
+            });
+            
+            $("#node-input-encoding").on('change', function() {
+                updateBitrateInfo();
+            });
+            
+            function updateBitrateInfo() {
+                var sampleRate = parseInt($("#node-input-sampleRate").val()) || 48000;
+                var channels = parseInt($("#node-input-channels").val()) || 2;
+                var encoding = $("#node-input-encoding").val() || "L24";
+                var bitsPerSample = encoding === "L24" ? 24 : 16;
+                
+                var bitrate = (sampleRate * channels * bitsPerSample) / 1000000;
+                $("#bitrate-info").text(bitrate.toFixed(2) + " Mbps");
+            }
+            
+            updateBitrateInfo();
+        }
+    });
+</script>
+
+<script type="text/x-red" data-template-name="aes67-sender">
+    <style>
+        .aes67-section { 
+            border: 1px solid #4B7BE5; 
+            padding: 12px; 
+            margin: 10px 0; 
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+            font-size: 14px;
+        }
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+    </style>
+    
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="AES67 Sender">
+    </div>
+    
+    <div class="aes67-section">
+        <div class="section-title"><i class="fa fa-stream"></i> Stream Configuration</div>
+        
+        <div class="form-row">
+            <label for="node-input-streamName"><i class="fa fa-info-circle"></i> Stream Name</label>
+            <input type="text" id="node-input-streamName" placeholder="My AES67 Stream">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-sampleRate"><i class="fa fa-wave-square"></i> Sample Rate</label>
+            <input type="text" id="node-input-sampleRate">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-channels"><i class="fa fa-sliders"></i> Channels</label>
+            <input type="number" id="node-input-channels" min="1" max="64" placeholder="2">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-encoding"><i class="fa fa-code"></i> Encoding</label>
+            <input type="text" id="node-input-encoding">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-ptime"><i class="fa fa-clock-o"></i> Packet Time</label>
+            <input type="number" id="node-input-ptime" min="1" max="20" placeholder="1">
+            <span style="margin-left: 10px; font-size: 11px; color: #666;">milliseconds</span>
+        </div>
+        
+        <div class="info-box">
+            <strong>Estimated Bitrate:</strong> <span id="bitrate-info">-</span>
+        </div>
+    </div>
+    
+    <div class="aes67-section">
+        <div class="section-title"><i class="fa fa-network-wired"></i> Network Configuration</div>
+        
+        <div class="form-row">
+            <label for="node-input-destIP"><i class="fa fa-bullseye"></i> Destination IP</label>
+            <input type="text" id="node-input-destIP" placeholder="239.69.1.1">
+            <span style="margin-left: 10px; font-size: 11px; color: #666;">Multicast address (239.x.x.x)</span>
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-destPort"><i class="fa fa-plug"></i> Destination Port</label>
+            <input type="number" id="node-input-destPort" min="1024" max="65535" placeholder="5004">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-ptpDomain"><i class="fa fa-clock"></i> PTP Domain</label>
+            <input type="number" id="node-input-ptpDomain" min="0" max="127" placeholder="0">
+        </div>
+        
+        <div class="form-row">
+            <label for="node-input-enableSAP">
+                <i class="fa fa-broadcast-tower"></i> Enable SAP
+            </label>
+            <input type="checkbox" id="node-input-enableSAP" checked style="display:inline-block; width:auto;">
+            <span style="margin-left:10px; font-size: 11px; color: #666;">Announce stream via SAP/SDP</span>
+        </div>
+    </div>
+    
+    <div class="warning-box">
+        <strong><i class="fa fa-exclamation-triangle"></i> Note:</strong> This node requires audio input data to be sent as Buffer objects via msg.payload. 
+        Audio data should be raw PCM samples matching the configured sample rate, channels, and encoding.
+        Use audio capture nodes or inject test patterns to provide audio data.
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="aes67-sender">
+    <p>Sends audio as an AES67-compliant RTP stream with SAP/SDP announcement.</p>
+    
+    <h3>Features</h3>
+    <ul>
+        <li><b>AES67 Compliant</b> - Follows SMPTE ST 2110-30 standard</li>
+        <li><b>RTP Transmission</b> - Sends audio over RTP (RFC 3550)</li>
+        <li><b>SAP Announcement</b> - Advertises stream via SAP (RFC 2974)</li>
+        <li><b>Multiple Sample Rates</b> - Supports 48kHz, 96kHz, and more</li>
+        <li><b>Multiple Channels</b> - Supports mono to multi-channel audio</li>
+        <li><b>PTP Awareness</b> - Includes PTP clock reference in SDP</li>
+    </ul>
+    
+    <h3>Input</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">buffer</span></dt>
+        <dd>Raw PCM audio data as a Buffer. Audio must match configured sample rate, channels, and encoding.</dd>
+        
+        <dt class="optional">payload.audio <span class="property-type">buffer</span></dt>
+        <dd>Alternative: audio data in msg.payload.audio property.</dd>
+        
+        <dt class="optional">topic <span class="property-type">string</span></dt>
+        <dd>Set to "control" for control messages. Use payload.command for control operations.</dd>
+    </dl>
+    
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Stream Name</dt>
+        <dd>Descriptive name for the audio stream (appears in SAP announcements)</dd>
+        
+        <dt>Sample Rate</dt>
+        <dd>Audio sample rate in Hz (48000, 96000, etc.)</dd>
+        
+        <dt>Channels</dt>
+        <dd>Number of audio channels (1 for mono, 2 for stereo, etc.)</dd>
+        
+        <dt>Encoding</dt>
+        <dd>PCM encoding format: L24 (24-bit) or L16 (16-bit)</dd>
+        
+        <dt>Packet Time</dt>
+        <dd>Audio duration per RTP packet in milliseconds (typically 1ms for AES67)</dd>
+        
+        <dt>Destination IP</dt>
+        <dd>Multicast IP address for the stream (239.x.x.x range)</dd>
+        
+        <dt>Destination Port</dt>
+        <dd>UDP port for RTP packets (typically 5004 or higher even numbers)</dd>
+        
+        <dt>PTP Domain</dt>
+        <dd>PTP domain number for clock reference (typically 0)</dd>
+        
+        <dt>Enable SAP</dt>
+        <dd>Enable automatic stream announcement via SAP/SDP</dd>
+    </dl>
+    
+    <h3>Audio Data Format</h3>
+    <p>Input audio must be raw PCM samples in the following format:</p>
+    <ul>
+        <li><b>Byte Order:</b> Big-endian (network byte order)</li>
+        <li><b>Sample Size:</b> 24-bit or 16-bit depending on encoding</li>
+        <li><b>Channel Order:</b> Interleaved (L, R, L, R for stereo)</li>
+        <li><b>Sample Rate:</b> Must match configured rate</li>
+    </ul>
+    
+    <h3>Control Messages</h3>
+    <p>Send control messages with topic="control" and payload.command:</p>
+    <ul>
+        <li><b>status</b> - Get current sender status</li>
+    </ul>
+    
+    <h3>AES67 Compliance</h3>
+    <p>This node implements:</p>
+    <ul>
+        <li>RTP/AVP audio transport (RFC 3550)</li>
+        <li>SAP stream announcement (RFC 2974)</li>
+        <li>SDP session description (RFC 4566)</li>
+        <li>PTP clock reference (IEEE 1588-2008)</li>
+        <li>AES67 recommended packet times (1ms)</li>
+    </ul>
+    
+    <p><b>Note:</b> Audio input must be provided separately via msg.payload. 
+    Consider using audio capture nodes or test pattern generators to supply audio data.
+    The node focuses on AES67-compliant RTP transmission and does not include audio device drivers.</p>
+</script>

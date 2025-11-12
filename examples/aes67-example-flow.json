@@ -1,0 +1,237 @@
+[
+    {
+        "id": "example-flow",
+        "type": "tab",
+        "label": "AES67 Example Flow",
+        "disabled": false,
+        "info": "# AES67 Example Flow\n\nThis flow demonstrates the AES67 nodes:\n\n1. **Discovery**: AES67 Router discovers streams on the network\n2. **Receiver**: Receives audio from a discovered stream\n3. **Sender**: Sends audio to a multicast address\n4. **Test Pattern**: Generates test audio data"
+    },
+    {
+        "id": "router-node",
+        "type": "aes67-router",
+        "z": "example-flow",
+        "name": "AES67 Discovery",
+        "autoDiscover": true,
+        "x": 150,
+        "y": 100,
+        "wires": [
+            ["debug-discovered"],
+            ["debug-audio"],
+            ["debug-status"]
+        ]
+    },
+    {
+        "id": "debug-discovered",
+        "type": "debug",
+        "z": "example-flow",
+        "name": "Discovered Streams",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 390,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "debug-audio",
+        "type": "debug",
+        "z": "example-flow",
+        "name": "Audio Data",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 370,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "debug-status",
+        "type": "debug",
+        "z": "example-flow",
+        "name": "Status",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 360,
+        "y": 120,
+        "wires": []
+    },
+    {
+        "id": "receiver-node",
+        "type": "aes67-receiver",
+        "z": "example-flow",
+        "name": "Studio Feed Receiver",
+        "streamSource": "manual",
+        "sourceIP": "",
+        "sourcePort": 5004,
+        "multicastGroup": "239.69.1.1",
+        "localPort": 0,
+        "sampleRate": 48000,
+        "channels": 2,
+        "encoding": "L24",
+        "outputMode": "buffer",
+        "x": 170,
+        "y": 220,
+        "wires": [
+            ["debug-received"]
+        ]
+    },
+    {
+        "id": "debug-received",
+        "type": "debug",
+        "z": "example-flow",
+        "name": "Received Audio",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 410,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "sender-node",
+        "type": "aes67-sender",
+        "z": "example-flow",
+        "name": "My Audio Stream",
+        "streamName": "Node-RED Test Stream",
+        "sampleRate": 48000,
+        "channels": 2,
+        "encoding": "L24",
+        "ptime": 1,
+        "destIP": "239.69.1.2",
+        "destPort": 5004,
+        "ptpDomain": 0,
+        "enableSAP": true,
+        "x": 420,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "test-pattern",
+        "type": "function",
+        "z": "example-flow",
+        "name": "Generate Test Audio (1ms @ 48kHz, Stereo L24)",
+        "func": "// Generate 1ms of test audio at 48kHz, stereo, L24 (24-bit PCM)\n// 48 samples * 2 channels * 3 bytes = 288 bytes\n\nconst sampleRate = 48000;\nconst channels = 2;\nconst bytesPerSample = 3; // L24 = 24-bit = 3 bytes\nconst duration = 0.001; // 1ms\nconst samples = Math.floor(sampleRate * duration);\n\nconst bufferSize = samples * channels * bytesPerSample;\nconst audioBuffer = Buffer.allocUnsafe(bufferSize);\n\n// Generate a simple sine wave test tone at 440Hz (A4)\nconst frequency = 440;\nconst amplitude = 0.5; // 50% amplitude to avoid clipping\n\nlet offset = 0;\nfor (let i = 0; i < samples; i++) {\n    // Calculate sine wave value\n    const t = i / sampleRate;\n    const value = Math.sin(2 * Math.PI * frequency * t) * amplitude;\n    \n    // Convert to 24-bit signed integer (-8388608 to 8388607)\n    const sample24 = Math.floor(value * 8388607);\n    \n    // Write as big-endian 24-bit (3 bytes) for both channels\n    for (let ch = 0; ch < channels; ch++) {\n        // Write 24-bit value as 3 bytes (big-endian)\n        audioBuffer[offset++] = (sample24 >> 16) & 0xFF;\n        audioBuffer[offset++] = (sample24 >> 8) & 0xFF;\n        audioBuffer[offset++] = sample24 & 0xFF;\n    }\n}\n\nmsg.payload = audioBuffer;\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 190,
+        "y": 340,
+        "wires": [
+            ["sender-node"]
+        ]
+    },
+    {
+        "id": "inject-start",
+        "type": "inject",
+        "z": "example-flow",
+        "name": "Send Test Audio (every 1ms)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "0.001",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 190,
+        "y": 300,
+        "wires": [
+            ["test-pattern"]
+        ]
+    },
+    {
+        "id": "comment-discovery",
+        "type": "comment",
+        "z": "example-flow",
+        "name": "Stream Discovery: Discovers AES67 streams via SAP/SDP",
+        "info": "",
+        "x": 240,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "comment-receiver",
+        "type": "comment",
+        "z": "example-flow",
+        "name": "Receiver: Receives audio from multicast group 239.69.1.1:5004",
+        "info": "",
+        "x": 260,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "comment-sender",
+        "type": "comment",
+        "z": "example-flow",
+        "name": "Sender: Generates and sends test audio to 239.69.1.2:5004",
+        "info": "",
+        "x": 230,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "status-request",
+        "type": "inject",
+        "z": "example-flow",
+        "name": "Request Status",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "control",
+        "payload": "{\"command\":\"status\"}",
+        "payloadType": "json",
+        "x": 150,
+        "y": 420,
+        "wires": [
+            ["receiver-node"]
+        ]
+    },
+    {
+        "id": "comment-control",
+        "type": "comment",
+        "z": "example-flow",
+        "name": "Control: Request status from receiver",
+        "info": "",
+        "x": 190,
+        "y": 380,
+        "wires": []
+    }
+]
